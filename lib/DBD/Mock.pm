@@ -1,6 +1,6 @@
 package DBD::Mock;
 
-# $Id: Mock.pm,v 1.14 2004/05/09 04:49:20 cwinters Exp $
+# $Id: Mock.pm,v 1.15 2004/07/23 15:28:48 cwinters Exp $
 
 #   Copyright (c) 2004 Chris Winters (spawned from original code
 #   Copyright (c) 1994 Tim Bunce)
@@ -12,7 +12,7 @@ use strict;
 use vars qw( $drh $err $errstr );
 require DBI;
 
-$DBD::Mock::VERSION = sprintf( "%d.%02d", q$Revision: 1.14 $ =~ /(\d+)\.(\d+)/o );
+$DBD::Mock::VERSION = sprintf( "%d.%02d", q$Revision: 1.15 $ =~ /(\d+)\.(\d+)/o );
 
 $drh    = undef;    # will hold driver handle
 $err    = 0;		# will hold any error codes
@@ -53,6 +53,9 @@ sub connect {
     my $dbh = DBI::_new_dbh( $drh, {
         Name                   => $dbname,
 
+        # holds statement parsing coderefs/objects
+        mock_parser            => [],
+
         # holds all statements applied to handle until manually cleared
         mock_statement_history => [],
 
@@ -63,6 +66,14 @@ sub connect {
         %{ $attr },
     }) or return undef;
     return $dbh;
+}
+
+
+# Necessary to support DBI < 1.34
+# from CPAN RT bug #7057
+
+sub disconnect_all {
+    # no-op
 }
 
 sub DESTROY {
@@ -86,6 +97,32 @@ sub ping {
 
 sub prepare {
     my( $dbh, $statement ) = @_;
+
+    eval {
+        foreach my $parser ( @{ $dbh->{mock_parser} } ) {
+            if ( ref $parser eq 'CODE' ) {
+                $parser->( $statement );
+            }
+            else {
+                $parser->parse( $statement );
+            }
+        }
+    };
+    if ( $@ ) {
+        my $parser_error = $@;
+        chomp $parser_error;
+        my $error = "Failed to parse statement. Error: $parser_error. " .
+                    "Statement: $statement";
+        $dbh->DBI::set_err( 1, $error );
+        $error .= "\n";
+        if ( $dbh->FETCH( 'PrintError' ) ) {
+            warn $error;
+            return undef;
+        }
+        elsif ( $dbh->FETCH( 'RaiseError' ) ) {
+            die $error;
+        }
+    }
 
     my $sth = DBI::_new_sth( $dbh, { Statement => $statement });
     $sth->trace_msg( "Preparing statement '$statement'\n", 1 );
@@ -119,14 +156,16 @@ sub prepare {
  	# connection present.
 
  	unless ( $dbh->FETCH( 'Active' ) ) {
- 		$dbh->DBI::set_err( 1, "No connection present" );
+        my $error = "No connection present";
+ 		$dbh->DBI::set_err( 1, $error );
+        $error .= "\n";
  		if ( $dbh->FETCH( 'PrintError' ) ) {
- 			warn "No connection present";
+ 			warn $error;
+            return undef;
  		}
  		if ( $dbh->FETCH( 'RaiseError' ) ) {
- 			die "No connection present";
+ 			die $error;
  		}
- 		return undef;
  	}
 
     # This history object will track everything done to the statement
@@ -178,6 +217,33 @@ sub STORE {
         }
         return [];
     }
+    elsif ( $attrib eq 'mock_add_parser' ) {
+        my $parser_type = ref $value;
+        my ( $is_valid_parser );
+
+        if ( $parser_type eq 'CODE' ) {
+            $is_valid_parser++;
+        }
+        elsif ( $parser_type and $parser_type !~ /^(ARRAY|HASH|SCALAR)$/ ) {
+            $is_valid_parser = eval { $parser_type->can( 'parse' ) };
+        }
+
+        unless ( $is_valid_parser ) {
+            my $error = "Parser must be a code reference or object with 'parse()' " .
+                        "method (Given type: '$parser_type')";
+            $dbh->DBI::set_err( 1, $error );
+            $error .= "\n";
+            if ( $dbh->FETCH( 'PrintError' ) ) {
+                warn $error;
+                return undef
+            }
+            if ( $dbh->FETCH( 'RaiseError' ) ) {
+                die $error;
+            }
+        }
+        push @{ $dbh->{mock_parser} }, $value;
+        return $value;
+    }
     elsif ( $attrib eq 'mock_add_resultset' ) {
         $dbh->{mock_rs} ||= { named   => {},
                               ordered => [] };
@@ -190,7 +256,7 @@ sub STORE {
             my $name = $value->{sql};
             unless ( $name ) {
                 die "Indexing resultset by name requires passing in 'sql' ",
-                    "as hashref key to 'mock_add_resultset'.";
+                    "as hashref key to 'mock_add_resultset'.\n";
             }
             my @copied_values = @{ $value->{results} };
             $dbh->{mock_rs}{named}{ $name } = \@copied_values;
@@ -233,14 +299,16 @@ sub bind_param {
 sub execute {
     my ( $sth, @params ) = @_;
 
-    unless ( $sth->{Database}->{mock_can_connect} ) {
- 		$sth->DBI::set_err( 1, "No connection present" );
+    unless ( $sth->{Database}{mock_can_connect} ) {
+        my $error = "No connection present";
+ 		$sth->DBI::set_err( 1, $error );
+        $error .= "\n";
  		if ( $sth->FETCH( 'PrintError' ) ) {
- 			warn "No connection present";
+ 			warn $error;
             return 0;
  		}
  		if ( $sth->FETCH( 'RaiseError' ) ) {
- 			die "No connection present";
+ 			die $error;
  		}
     }
 
@@ -258,13 +326,15 @@ sub fetch {
     my( $sth ) = @_;
 
     unless ( $sth->{Database}->{mock_can_connect} ) {
- 		$sth->DBI::set_err( 1, "No connection present" );
+        my $error = "No connection present";
+ 		$sth->DBI::set_err( 1, $error );
+        $error .= "\n";
  		if ( $sth->FETCH( 'PrintError' ) ) {
- 			warn "No connection present";
+ 			warn $error;
             return undef;
  		}
  		if ( $sth->FETCH( 'RaiseError' ) ) {
- 			die "No connection present";
+ 			die $error;
  		}
     }
 
@@ -866,6 +936,44 @@ histories from each other. A typical sequence will look like:
  analyze mock database handle
  reset mock database handle history
  ...
+
+B<mock_add_parser>
+
+DBI provides some simple parsing capabilities for 'SELECT' statements
+to ensure that placeholders are bound properly. And typically you may
+simply want to check after the fact that a statement is syntactically
+correct, or at least what you expect.
+
+But other times you may want to parse the statement as it is prepared
+rather than after the fact. There is a hook in this mock database
+driver for you to provide your own parsing routine or object.
+
+The syntax is simple:
+
+ $dbh->{mock_add_parser} = sub {
+     my ( $sql ) = @_;
+     unless ( $sql =~ /some regex/ ) {
+         die "does not contain secret fieldname";
+     }
+ };
+
+You can also add more than one for a handle. They will be called in
+order, and the first one to fail will halt the parsing process:
+
+ $dbh->{mock_add_parser} = \&parse_update_sql;
+ $dbh->{mock_add-parser} = \&parse_insert_sql;
+
+Depending on the 'PrintError' and 'RaiseError' settings in the
+database handle any parsing errors encountered will issue a C<warn> or
+C<die>. No matter what the statement handle will be C<undef>.
+
+Instead of providing a subroutine reference you can use an object. The
+only requirement is that it implements the method C<parse()> and takes
+a SQL statement as the only argument. So you should be able to do
+something like the following (untested):
+
+ my $parser = SQL::Parser->new( 'mysql', { RaiseError => 1 } );
+ $dbh->{mock_add_parser} = $parser;
 
 =head2 Statement Handle Properties
 

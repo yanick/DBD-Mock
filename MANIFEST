@@ -8,6 +8,7 @@ lib/DBD/Mock.pm
 t/00_basic.t
 t/10_db_handle.t
 t/12_db_can_connect.t
+t/14_db_parser.t
 t/20_st_execute_empty.t
 t/25_st_execute_bound_params.t
 t/30_st_execute_pass_params.t

@@ -1,9 +1,9 @@
 # -*-perl-*-
 
-# $Id: 12_db_can_connect.t,v 1.1 2004/05/08 19:17:06 cwinters Exp $
+# $Id: 12_db_can_connect.t,v 1.2 2004/07/23 14:03:16 cwinters Exp $
 
 use strict;
-use Test::More tests => 5;
+use Test::More tests => 6;
 require DBI;
 
 my $dbh = DBI->connect( "DBI:Mock:", '', '',
@@ -20,11 +20,14 @@ ok( ! $dbh->ping,
     '...and unsuccessfuly pinged handle (good)' );
 
 eval {
-	$dbh->prepare(" SELECT foo FROM bar" );
+	$dbh->prepare( "SELECT foo FROM bar" );
 };
 if ( $@ ) {
-	ok( $@ =~ /^No connection present/ && $dbh->errstr eq "No connection present",
-        'Preparing statement against inactive handle throws expected exception' );
+    my $con_re = qr{^No connection present};
+	like( $@, $con_re,
+          'Preparing statement against inactive handle throws expected exception' );
+    like( $dbh->errstr, $con_re,
+          'Preparing statement against inactive handle sets expected DBI error' );
 }
 else {
 	fail( 'Preparing statement against inactive handle did not throw exception!' );
