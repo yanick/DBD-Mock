@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.24';
+our $VERSION = '1.25';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -34,6 +34,8 @@ sub driver {
         Attribution => 'DBD Mock driver by Chris Winters & Stevan Little (orig. from Tim Bunce)',
         Err         => \$DBD::Mock::err,
  		Errstr      => \$DBD::Mock::errstr,
+        # mock attributes
+        mock_connect_fail => 0,
     });
     return $drh;
 }
@@ -100,6 +102,10 @@ $DBD::Mock::dr::imp_data_size = 0;
 
 sub connect {
     my ($drh, $dbname, $user, $auth, $attributes) = @_;
+    if ($drh->{'mock_connect_fail'} == 1) {
+        $drh->DBI::set_err(1, "Could not connect to mock database");
+        return undef;
+    }
     $attributes ||= {};
     if ($dbname && $DBD::Mock::AttributeAliasing) {
         # this is the DB we are mocking
@@ -118,6 +124,18 @@ sub connect {
         %{ $attributes },
     }) || return undef;
     return $dbh;
+}
+
+sub STORE {
+    my ($drh, $attr, $value) = @_;
+    if ($attr =~ /^mock_/) {
+        if ($attr eq 'mock_connect_fail') {
+            return $drh->{'mock_connect_fail'} = $value ? 1 : 0;        
+        }
+    }
+    else {
+        return $drh->SUPER::STORE($attr, $value);
+    }
 }
 
 sub data_sources {
@@ -958,6 +976,32 @@ This may be an incredibly naive implementation of a DBD. But it works for me ...
 
 Since this is a normal DBI statement handle we need to expose our tracking information as properties (accessed like a hash) rather than methods.
 
+=head2 Database Driver Properties
+
+=over 4
+
+=item B<mock_connect_fail>
+
+This is a boolean property which when set to true (C<1>) will not allow DBI to connect. This can be used to simulate a DSN error or authentication failure. This can then be set back to false (C<0>) to resume normal DBI operations. Here is an example of how this works:
+
+  # install the DBD::Mock driver
+  my $drh = DBI->install_driver('Mock');
+  
+  $drh->{mock_connect_fail} = 1;
+  
+  # this connection will fail
+  my $dbh = DBI->connect('dbi:Mock:', '', '') || die "Cannot connect";
+  
+  # this connection will throw an exception
+  my $dbh = DBI->connect('dbi:Mock:', '', '', { RaiseError => 1 });
+  
+  $drh->{mock_connect_fail} = 0;
+  
+  # this will work now ...
+  my $dbh = DBI->connect(...);
+
+=back
+
 =head2 Database Handle Properties
 
 =over 4
@@ -1471,9 +1515,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
  File                           stmt branch   cond    sub    pod   time  total
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                    90.5   86.1   82.6   94.1    0.0  100.0   88.9
+ lib/DBD/Mock.pm                90.7   86.6   82.6   94.2    0.0  100.0   89.1
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- Total                          90.5   86.1   82.6   94.1    0.0  100.0   88.9
+ Total                          90.7   86.6   82.6   94.2    0.0  100.0   89.1
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO
@@ -1486,9 +1530,19 @@ L<Test::MockObject>, which provided the approach
 
 Test::MockObject article - L<http://www.perl.com/pub/a/2002/07/10/tmo.html>
 
+=head1 ACKNOWLEDGEMENTS  
+
+=over 4
+
+=item Thanks to Rob Kinyon for many ideas, thoughts and discussions about DBD::Mock
+
+=item Thanks to Justin DeVuyst for the mock_connect_fail idea
+
+=back
+
 =head1 COPYRIGHT
 
-Copyright (c) 2004 Stevan Little, Chris Winters. All rights reserved.
+Copyright (c) 2004 & 2005 Stevan Little, Chris Winters. All rights reserved.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.
