@@ -1,5 +1,10 @@
 Revision history for Perl extension DBD::Mock.
 
+0.13 
+    - added prepare_cached as suggested by Rob Kinyon 
+      in RT bug #7331. Also added his test script in
+      15_prepare_cached.t
+
 0.12 Thurs Sept 2 2004
 ** First version maintained by Stevan Little <stevan@iinteractive.com> **
     - built up the test suite to 89.7% coverage

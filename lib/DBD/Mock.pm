@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '0.12';
+our $VERSION = '0.13';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -177,6 +177,8 @@ sub prepare {
 
     return $sth;
 }
+
+*prepare_cached = \&prepare;
 
 sub FETCH {
     my ( $dbh, $attrib ) = @_;
@@ -1224,9 +1226,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ------------------------ ------ ------ ------ ------ ------ ------ ------
  File                       stmt branch   cond    sub    pod   time  total
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                91.5   85.7   86.2   94.4    0.0  100.0   89.7
+ DBD/Mock.pm                91.4   85.7   86.2   94.2    0.0  100.0   89.6
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- Total                      91.5   85.7   86.2   94.4    0.0  100.0   89.7
+ Total                      91.4   85.7   86.2   94.2    0.0  100.0   89.6
  ------------------------ ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO
