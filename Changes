@@ -1,0 +1,8 @@
+Revision history for Perl extension DBD::Mock.
+
+0.01  Sun Mar  7 23:24:24 EST 2004
+
+      Initial version spawned from DBD::NullP shipped with the
+      DBI. Many thanks much to Tim Bunce for the pointer and the
+      original code.
+
