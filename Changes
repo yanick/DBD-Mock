@@ -1,6 +1,31 @@
 Revision history for Perl extension DBD::Mock.
 
-0.18 Wed Jan 5 2004
+0.19 Fri Jan 7 2005
+    - changed the VERSION in lib/DBD/Mock.pm to be 1.23, allow me to explain...
+      
+        Chris Winters (the original author) used the CVS derived 
+        VERSION, which when I took over the module (8 versions ago) 
+        was at 1.15. Since I was not using Chris's CVS repo to store this
+        I decided to give Mock.pm the VERSION number found in the VERSION
+        file. 
+        
+        Well,... PAUSE's indexer doesn't like it since it is a lower
+        number and would complain every time I uploaded a new version.
+        I ignored these complaints (at my own peril) until now. 
+        
+        I found out recently that if you had version 0.11 or below installed 
+        (where the Mock.pm was version 1.15 or below), then installing through 
+        the CPAN shell would tell you DBD::Mock was up to date, even though it 
+        wasn't. So in order to fix this issue, and make sure that all those who
+        want to install and update DBD::Mock easily, I changed the version
+        number of DBD::Mock to be 1.23 to reflect the number of updates
+        I have done since Chris handed it over to me. 
+        
+        *sigh*
+        
+        Okay good, thats off my chest now.
+
+0.18 Wed Jan 5 2005
     - added reset() method to the 
       DBD::Mock::StatementTrack::Iterator object
         - added test and docs for this
