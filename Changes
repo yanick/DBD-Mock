@@ -1,5 +1,17 @@
 Revision history for Perl extension DBD::Mock.
 
+0.23 Tues Jan 25 2005
+    - removed the trace log tests from t/10_db_handle.t
+      since they seemed to be a source of issues on Win32.
+      My rationale is that it is a DBI thing, and therefore
+      does not need to be tested by DBD::Mock. 
+
+    - added a few more tests to t/11_dr_handle.t to test the
+      'mock_connect_fail' feature
+      
+    - added some clarification in the docs about the 
+      'mock_connect_fail' feature as well.
+
 0.22 Mon Jan 24 2005
     - added the 'mock_connect_fail' boolean attribute 
       for the DBD::Mock driver handle, this will prevent

@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.25';
+our $VERSION = '1.26';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -999,6 +999,8 @@ This is a boolean property which when set to true (C<1>) will not allow DBI to c
   
   # this will work now ...
   my $dbh = DBI->connect(...);
+  
+This feature is conceptually different from the 'mock_can_connect' attribute of the C<$dbh> in that it has a driver-wide scope, where 'mock_can_connect' is handle-wide scope. It also only prevents the initial connection, any C<$dbh> handles created prior to setting 'mock_connect_fail' to true (C<1>) will still go on working just fine.
 
 =back
 
