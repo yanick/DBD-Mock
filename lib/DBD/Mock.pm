@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '0.13';
+our $VERSION = '0.14';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -31,7 +31,7 @@ sub driver {
     $drh = DBI::_new_drh( "${class}::dr", {
         Name        => 'Mock',
         Version     => $DBD::Mock::VERSION,
-        Attribution => 'DBD Mock driver by Chris Winters (orig. from Tim Bunce)',
+        Attribution => 'DBD Mock driver by Chris Winters & Stevan Little (orig. from Tim Bunce)',
         Err         => \$DBD::Mock::err,
  		Errstr      => \$DBD::Mock::errstr,
     });
@@ -40,7 +40,7 @@ sub driver {
 
 sub CLONE { undef $drh }
 
-sub DBD::Mock::_error_handler {
+sub _error_handler {
     my ($dbh, $error) = @_;
     $dbh->DBI::set_err(1, $error);
     if ($dbh->{'PrintError'}) {
@@ -49,6 +49,43 @@ sub DBD::Mock::_error_handler {
     elsif ($dbh->{'RaiseError'}) {
         die "$error\n";
     }
+}
+
+# NOTE:
+# this feature is still quite experimental. It is defaulted to
+# be off, but it can be turned on by doing this: 
+#    $DBD::Mock::AttributeAliasing++;
+# and then turned off by doing:
+#    $DBD::Mock::AttributeAliasing = 0;
+# we shall see how this feature works out.
+
+our $AttributeAliasing = 0;
+
+my %AttributeAliases = (
+    mysql  => {
+            db => {
+                # aliases can either be a string which is obvious
+                mysql_insertid => 'mock_last_insert_id'
+            },
+            st => {
+                # but they can also be a subroutine reference whose
+                # first argument will be either the $dbh or the $sth
+                # depending upon which context it is aliased in. 
+                mysql_insertid => sub { (shift)->{Database}->{'mock_last_insert_id'} }
+            }
+        },
+);
+
+sub _get_mock_attribute_aliases {
+    my ($dbname) = @_;
+    (exists $AttributeAliases{lc($dbname)})
+        || die "Attribute aliases not available for '$dbname'";
+    return $AttributeAliases{lc($dbname)};
+}
+
+sub _set_mock_attribute_aliases {
+    my ($dbname, $dbh_or_sth, $key, $value) = @_;
+    return $AttributeAliases{lc($dbname)}->{$dbh_or_sth}->{$key} = $value;
 }
 
 ########################################
@@ -64,8 +101,13 @@ $DBD::Mock::dr::imp_data_size = 0;
 sub connect {
     my ($drh, $dbname, $user, $auth, $attributes) = @_;
     $attributes ||= {};
+    if ($dbname && $DBD::Mock::AttributeAliasing) {
+        # this is the DB we are mocking
+        $attributes->{mock_attribute_aliases} = DBD::Mock::_get_mock_attribute_aliases($dbname);
+        $attributes->{mock_database_name} = $dbname;
+    }
     my $dbh = DBI::_new_dbh($drh, {
-        Name                   => $dbname,
+        Name                   => $dbname,       
         # holds statement parsing coderefs/objects
         mock_parser            => [],
         # holds all statements applied to handle until manually cleared
@@ -127,6 +169,8 @@ sub prepare {
     }
     
     my $sth = DBI::_new_sth($dbh, { Statement => $statement });
+    
+    $dbh->{mock_last_insert_id}++ if ($statement =~ /^\s*?INSERT/);
     
     $sth->trace_msg("Preparing statement '${statement}'\n", 1);
     
@@ -193,15 +237,26 @@ sub FETCH {
         return $dbh->{mock_statement_history};
     }
     elsif ($attrib =~ /^mock/) {
-        return $dbh->{ $attrib };
+        return $dbh->{$attrib};
     }
     elsif ($attrib =~ /^(private_|dbi_|dbd_|[A-Z])/ ) {
         $dbh->trace_msg("... fetching non-driver attribute ($attrib) that DBI handles\n");    
         return $dbh->SUPER::FETCH($attrib);
     }      
     else {
+        if ($dbh->{mock_attribute_aliases}) {
+            if (exists ${$dbh->{mock_attribute_aliases}->{db}}{$attrib}) {
+                my $mock_attrib = $dbh->{mock_attribute_aliases}->{db}->{$attrib};
+                if (ref($mock_attrib) eq 'CODE') {
+                   return $mock_attrib->($dbh);
+                }
+                else {
+                    return $dbh->FETCH($mock_attrib);
+                }
+            }
+        }
         $dbh->trace_msg( "... fetching non-driver attribute ($attrib) that DBI doesn't handle\n");
-        return $dbh->{ $attrib };
+        return $dbh->{$attrib};
     }
 }
 
@@ -260,6 +315,11 @@ sub STORE {
             die "Must provide an arrayref or hashref when adding ",
                 "resultset via 'mock_add_resultset'.\n";
         }
+    }
+    elsif ($attrib eq 'mock_start_insert_id') {
+        # we start at one minus the start id
+        # so that the increment works
+        $dbh->{mock_last_insert_id} = $value - 1;
     }
     elsif ($attrib =~ /^mock/) {  
         return $dbh->{$attrib} = $value;
@@ -352,6 +412,17 @@ sub FETCH {
         return $tracker->is_active;
     }
     elsif ( $attrib !~ /^mock/ ) {
+        if ($sth->{Database}->{mock_attribute_aliases}) {
+            if (exists ${$sth->{Database}->{mock_attribute_aliases}->{st}}{$attrib}) {
+                my $mock_attrib = $sth->{Database}->{mock_attribute_aliases}->{st}->{$attrib};
+                if (ref($mock_attrib) eq 'CODE') {
+                   return $mock_attrib->($sth);
+                }
+                else {
+                    return $sth->FETCH($mock_attrib);
+                }
+            }
+        }     
         return $sth->SUPER::FETCH( $attrib );
     }
 
@@ -384,7 +455,7 @@ sub FETCH {
     elsif ( $attrib eq 'mock_is_depleted' ) {
         return $tracker->is_depleted;
     }
-    else {
+    else {   
         die "I don't know how to retrieve statement attribute '$attrib'\n";
     }
 }
@@ -919,6 +990,18 @@ FROM baz' is prepared. Note that they will be returned B<every time>
 the statement is prepared, not just the first. (This behavior could
 change.)
 
+B<mock_last_insert_id>
+
+This attribute is incremented each time an INSERT statement is passed
+to prepare on a per-handle basis. It's starting value can be set with 
+the 'mock_start_insert_id' attribute (see below).
+
+B<mock_start_insert_id>
+
+This attribute can be used to set a start value for the 'mock_last_insert_id'
+attribute. It can also be used to effectively reset the 'mock_last_insert_id'
+attribute as well.
+
 B<mock_clear_history>
 
 If set to a true value all previous statement history operations will
@@ -1193,6 +1276,34 @@ B<to_string()>
 Tries to give an decent depiction of the object state for use in
 debugging.
 
+=head1 EXPERIMENTAL FUNCTIONALITY
+
+All functionality listed here is highly experimental and should be used with great caution (if at all). 
+
+=over 
+
+=item Attribute Aliasing
+
+Basically this feature allows you to alias attributes to other attributes. So for instance, you can alias a commonly expected attribute like 'mysql_insertid' to something DBD::Mock already has like 'mock_last_insert_id'. While you can also just set 'mysql_insertid' yourself, this functionality allows it to take advantage of things like the autoincrementing of the 'mock_last_insert_id' attribute. 
+
+Right now this feature is highly experimental, and has been added as a first attempt to automatically handle some of the DBD specific attributes which are commonly used/accessed in DBI programming. The functionality is off by default so as to not cause any issues with backwards compatability, but can easily be turned on and off like this:
+
+  # turn it on
+  $DBD::Mock::AttributeAliasing++;
+  
+  # turn it off
+  $DBD::Mock::AttributeAliasing = 0;
+
+Once this is turned on, you will need to choose a database specific attribute aliasing table like so:
+
+  DBI->connect('dbi:Mock:MySQL', '', '');
+
+The 'MySQL' in the DSN will be picked up and the MySQL specific attribute aliasing will be used.
+
+Right now only MySQL is supported by this feature, and even that support is very minimal. Currently the MySQL C<$dbh> and C<$sth> attributes 'mysql_insertid' are aliased to the C<$dbh> attribute 'mock_last_insert_id'. It is possible to add more aliases though, using the C<DBD::Mock:_set_mock_attribute_aliases> function (see the source code for details).
+
+=back
+
 =head1 BUGS
 
 =over
@@ -1226,9 +1337,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ------------------------ ------ ------ ------ ------ ------ ------ ------
  File                       stmt branch   cond    sub    pod   time  total
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                91.4   85.7   86.2   94.2    0.0  100.0   89.6
+ DBD/Mock.pm                88.5   81.5   87.5   92.6    0.0  100.0   86.7
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- Total                      91.4   85.7   86.2   94.2    0.0  100.0   89.6
+ Total                      88.5   81.5   87.5   92.6    0.0  100.0   86.7
  ------------------------ ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO

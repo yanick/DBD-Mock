@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 21;
+use Test::More tests => 22;
 
 BEGIN {
     use_ok('DBD::Mock');  
@@ -13,8 +13,10 @@ BEGIN {
 # test misc. attributes
 
 {
-    my $dbh = DBI->connect('DBI:Mock:', '', '');
+    my $dbh = DBI->connect('DBI:Mock:', 'user', 'pass');
     isa_ok($dbh, 'DBI::db'); 
+    
+    is($dbh->{Name}, '', '... if no db-name is given');
     
     # DBI will handle attributes with 'private_', 'dbi_' or ,
     # 'dbd_' prefixes but all others, we need to handle.

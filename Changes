@@ -1,6 +1,26 @@
 Revision history for Perl extension DBD::Mock.
 
-0.13 
+0.14 Fri Oct 29 2004
+    - added the mock_last_insert_id attribute
+      which will get incremented upon each INSERT
+      query run. 
+        - added tests and docs for this
+    - added the mock_start_insert_id attirbute
+      so that you can both reset and set the start
+      number for mock_last_insert_id
+        - added tests and docs for this
+        
+    ** EXPERIMENTAL FEATURE (use caution) **
+    - added a feature to alias attributes. Basically it
+      allows you to alias an expected attribute like 
+      'mysql_insertid' to something DBD::Mock already has
+      like 'mock_last_insert_id'. 
+      Right now this feature is highly experimental, and 
+      has been added as a first attempt automatically handle
+      some of the DBD specific attributes which are commonly
+      used/accessed in DBI programming. 
+
+0.13 Thurs Oct 28 2004
     - added prepare_cached as suggested by Rob Kinyon 
       in RT bug #7331. Also added his test script in
       15_prepare_cached.t
