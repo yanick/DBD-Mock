@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '0.14';
+our $VERSION = '0.15';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -236,6 +236,9 @@ sub FETCH {
     elsif ($attrib eq 'mock_all_history') {
         return $dbh->{mock_statement_history};
     }
+    elsif ($attrib eq 'mock_all_history_iterator') {
+        return DBD::Mock::StatementTrack::Iterator->new(@{$dbh->{mock_statement_history}});
+    }    
     elsif ($attrib =~ /^mock/) {
         return $dbh->{$attrib};
     }
@@ -661,6 +664,25 @@ sub bound_params {
     return $self->{bound_params};
 }
 
+package DBD::Mock::StatementTrack::Iterator;
+
+use strict;
+use warnings;
+
+sub new {
+    my ($class, @history) = @_;
+    return bless { 
+            pointer => 0, 
+            history => [ @history ] 
+            } => $class;
+}
+
+sub next {
+    my ($self) = @_;  
+    return unless $self->{pointer} < scalar(@{$self->{history}});
+    return $self->{history}->[$self->{pointer}++];
+}
+
 1;
 
 __END__
@@ -863,6 +885,39 @@ database handle in the order they were created. Each history object
 can then report information about the SQL statement used to create it,
 the bound parameters, etc..
 
+B<mock_all_history_iterator>
+
+Returns a C<DBD::Mock::StatementTrack::Iterator> object which will iterate
+through the current set of C<DBD::Mock::StatementTrack> object in the 
+history. See the B<DBD::Mock::StatementTrack::Iterator> documentation below
+for more information.
+
+B<mock_clear_history>
+
+If set to a true value all previous statement history operations will
+be erased. This B<includes> the history of currently open handles, so
+if you do something like:
+
+ my $dbh = get_handle( ... );
+ my $sth = $dbh->prepare( ... );
+ $dbh->{mock_clear_history} = 1;
+ $sth->execute( 'Foo' );
+
+You will have no way to learn from the database handle that the
+statement parameter 'Foo' was bound.
+
+This is useful mainly to ensure you can isolate the statement
+histories from each other. A typical sequence will look like:
+
+ set handle to framework
+ perform operations
+ analyze mock database handle
+ reset mock database handle history
+ perform more operations
+ analyze mock database handle
+ reset mock database handle history
+ ...
+
 B<mock_can_connect>
 
 This statement allows you to simulate a downed database connection.
@@ -1001,32 +1056,6 @@ B<mock_start_insert_id>
 This attribute can be used to set a start value for the 'mock_last_insert_id'
 attribute. It can also be used to effectively reset the 'mock_last_insert_id'
 attribute as well.
-
-B<mock_clear_history>
-
-If set to a true value all previous statement history operations will
-be erased. This B<includes> the history of currently open handles, so
-if you do something like:
-
- my $dbh = get_handle( ... );
- my $sth = $dbh->prepare( ... );
- $dbh->{mock_clear_history} = 1;
- $sth->execute( 'Foo' );
-
-You will have no way to learn from the database handle that the
-statement parameter 'Foo' was bound.
-
-This is useful mainly to ensure you can isolate the statement
-histories from each other. A typical sequence will look like:
-
- set handle to framework
- perform operations
- analyze mock database handle
- reset mock database handle history
- perform more operations
- analyze mock database handle
- reset mock database handle history
- ...
 
 B<mock_add_parser>
 
@@ -1276,6 +1305,14 @@ B<to_string()>
 Tries to give an decent depiction of the object state for use in
 debugging.
 
+=head1 DBD::Mock::StatementTrack::Iterator
+
+This object can be used to iterate through the current set of C<DBD::Mock::StatementTrack> objects in the history by fetching the 'mock_all_history_iterator' attribute from a database handle. This object is very simple and is meant to be a convience to make writing long test script easier. Aside from the constructor (C<new>) this object has only one method.
+
+B<next>
+
+Calling C<next> will return the next C<DBD::Mock::StatementTrack> object in the history. If there are no more C<DBD::Mock::StatementTrack> objects available, then this method will return undef. 
+
 =head1 EXPERIMENTAL FUNCTIONALITY
 
 All functionality listed here is highly experimental and should be used with great caution (if at all). 
@@ -1337,9 +1374,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ------------------------ ------ ------ ------ ------ ------ ------ ------
  File                       stmt branch   cond    sub    pod   time  total
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                88.5   81.5   87.5   92.6    0.0  100.0   86.7
+ DBD/Mock.pm                89.0   82.0   87.5   93.1    0.0  100.0   87.2
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- Total                      88.5   81.5   87.5   92.6    0.0  100.0   86.7
+ Total                      89.0   82.0   87.5   93.1    0.0  100.0   87.2
  ------------------------ ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO

@@ -1,5 +1,11 @@
 Revision history for Perl extension DBD::Mock.
 
+0.15 Fri Oct 29 2004
+    - added the DBD::Mock::StatementTrack::Iterator
+      object which can be accessed from the 
+      'mock_all_history_iterator' attribute. 
+        - write the docs and test for it
+
 0.14 Fri Oct 29 2004
     - added the mock_last_insert_id attribute
       which will get incremented upon each INSERT
