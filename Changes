@@ -1,5 +1,11 @@
 Revision history for Perl extension DBD::Mock.
 
+0.20 Fri Jan 14 2005
+    - Modified a set of tests in t/10_db_handle.t to pass on Cygwin.
+      Thanks to Rob Kinyon for this code. This code now uses File::Temp
+      to make the temp log file in a cross platform manner. If File::Temp
+      is not found on the system, then the tests are skipped.
+      
 0.19 Fri Jan 7 2005
     - changed the VERSION in lib/DBD/Mock.pm to be 1.23, allow me to explain...
       
