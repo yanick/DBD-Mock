@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.23';
+our $VERSION = '1.24';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -170,7 +170,7 @@ sub prepare {
     
     if (my $session = $dbh->FETCH('mock_session')) {
         eval {
-            $session->verify($dbh, $statement);
+            $session->verify_statement($dbh, $statement);
         };
         if ($@) {
             my $session_error = $@;
@@ -277,7 +277,7 @@ sub FETCH {
 
 sub STORE {
     my ( $dbh, $attrib, $value ) = @_;   
-    $dbh->trace_msg( "Storing DB attribute '$attrib' with '$value'\n" );
+    $dbh->trace_msg( "Storing DB attribute '$attrib' with '" . (defined($value) ? $value : 'undef') . "'\n" );
     if ($attrib eq 'AutoCommit') {
         $dbh->{AutoCommit} = $value;
         return $value;
@@ -338,9 +338,10 @@ sub STORE {
         $dbh->{mock_last_insert_id} = $value - 1;
     }
     elsif ($attrib eq 'mock_session') {
-        (defined($value) && ref($value) && UNIVERSAL::isa($value, 'DBD::Mock::Session'))
-            || die "Only DBD::Mock::Session objects can be placed into the 'mock_session' slot\n";
-        $dbh->{mock_session} = $value;
+        (ref($value) && UNIVERSAL::isa($value, 'DBD::Mock::Session'))
+            || die "Only DBD::Mock::Session objects can be placed into the 'mock_session' slot\n"
+                if defined $value;
+        $dbh->{mock_session} = $value;        
     }
     elsif ($attrib =~ /^mock/) {  
         return $dbh->{$attrib} = $value;
@@ -388,6 +389,20 @@ sub execute {
     if ( @params ) {
         $tracker->bound_param_trailing( @params );
     }
+    
+    if (my $session = $sth->{Database}->{mock_session}) {
+        my $dbh = $sth->{Database};
+        eval {
+            $session->verify_bound_params($dbh, $tracker->bound_params());
+        };
+        if ($@) {
+            my $session_error = $@;
+            chomp $session_error;
+            DBD::Mock::_error_handler($dbh, "Session Error: ${session_error}");
+            return undef;
+        }        
+    }
+    
     $tracker->mark_executed;
     my $fields = $tracker->fields;
     $sth->STORE( NUM_OF_PARAMS => $tracker->num_params );
@@ -746,8 +761,11 @@ sub new {
 
 sub name { (shift)->{name} }
 
-sub verify {
+sub verify_statement {
     my ($self, $dbh, $statement) = @_;
+#    print ">>> index:" . $self->{state_index} . " num: " . scalar(@{$self->{states}}) . "\n";
+    ($self->{state_index} < scalar(@{$self->{states}}))
+        || die "Session states exhausted, only '" . scalar(@{$self->{states}}) . "' in DBD::Mock::Session (" . $self->{name} . ")";
     my $current_state = $self->{states}->[$self->{state_index}];
     # make sure our state is good
     (exists ${$current_state}{statement} && exists ${$current_state}{results})
@@ -773,8 +791,23 @@ sub verify {
     # if we are hear then things worked out well :)
 #    print STDERR "Adding Results: " . (join " | " => map { join ", " => @{$_} } @{$current_state->{results}}) . "\n";
     $dbh->STORE('mock_add_resultset' => $current_state->{results});
-    # now we can get ready 
-    # for the next statement
+}
+
+sub verify_bound_params {
+    my ($self, $dbh, $params) = @_;
+    my $current_state = $self->{states}->[$self->{state_index}];
+    if (exists ${$current_state}{bound_params}) {
+        my $expected = $current_state->{bound_params};
+        (scalar(@{$expected}) == scalar(@{$params}))
+            || die "Not the same number of bound params in current state in DBD::Mock::Session (" . $self->{name} . ")";
+        for (my $i = 0; $i < scalar(@{$params}); $i++) {
+            no warnings;
+            ($params->[$i] eq $expected->[$i])
+                || die "Bound params do not match in current state in DBD::Mock::Session (" . $self->{name} . ")"; 
+        }
+    }
+    # and make sure we go to 
+    # the next statement    
     $self->{state_index}++;
 }
 
@@ -1067,7 +1100,7 @@ You can also associate a resultset with a particular SQL statement instead of ad
      ],
   };
 
-This will return the given results when the statement 'SELECT foo, bar FROM baz' is prepared. Note that they will be returned B<every time> the statement is prepared, not just the first. (This behavior could change.)
+This will return the given results when the statement 'SELECT foo, bar FROM baz' is prepared. Note that they will be returned B<every time> the statement is prepared, not just the first. It should also be noted that if you want, for some reason, to change the result set bound to a particular SQL statement, all you need to do is add the result set again with the same SQL statement and DBD::Mock will overwrite it.
 
 It should also be noted that the C<rows> method will return the number of records stocked in the result set. So if your code/application makes use of the C<$sth-E<gt>rows> method for things like UPDATE and DELETE calls you should stock the result set like so:
 
@@ -1089,7 +1122,7 @@ Now I admit this is not the most elegant way to go about this, but it works for 
 
 =item B<mock_session>
 
-This attribute can be used to set a current DBD::Mock::Session object. For more information on this, see the L<DBD::Mock::Session> docs below.
+This attribute can be used to set a current DBD::Mock::Session object. For more information on this, see the L<DBD::Mock::Session> docs below. This attribute can also be used to remove the current session from the C<$dbh> simply by setting it to C<undef>. 
 
 =item B<mock_last_insert_id>
 
@@ -1207,24 +1240,17 @@ Returns a C<DBD::Mock::StatementTrack> object which tracks the actions performed
 
 =head1 DBD::Mock::Pool
 
-This module can be used to emulate Apache::DBI style DBI connection 
-pooling. Just as with Apache::DBI, you must enable DBD::Mock::Pool 
-before loading DBI.
+This module can be used to emulate Apache::DBI style DBI connection pooling. Just as with Apache::DBI, you must enable DBD::Mock::Pool before loading DBI.
 
   use DBD::Mock qw(Pool);
   # followed by ...
   use DBI;
 
-While this may not seem to make a lot of sense in a single-process testing 
-scenario, it can be useful when testing code which assumes a multi-process
-Apache::DBI pooled environment.
+While this may not seem to make a lot of sense in a single-process testing scenario, it can be useful when testing code which assumes a multi-process Apache::DBI pooled environment.
 
 =head1 DBD::Mock::StatementTrack
 
-Under the hood this module does most of the work with a
-C<DBD::Mock::StatementTrack> object. This is most useful when you are
-reviewing multiple statements at a time, otherwise you might want to
-use the C<mock_*> statement handle attributes instead.
+Under the hood this module does most of the work with a C<DBD::Mock::StatementTrack> object. This is most useful when you are reviewing multiple statements at a time, otherwise you might want to use the C<mock_*> statement handle attributes instead.
 
 =over 4
 
@@ -1353,10 +1379,18 @@ The DBD::Mock::Session object is an alternate means of specifying the SQL statem
                     return $SQL eq "SELECT foo FROM bar";
                     },  
             results   => [[ 'foo' ], [ 'bar' ]]
-        }
+        },
+        { 
+            # with bound parameters
+            statement    => "SELECT foo FROM bar WHERE baz = ?",
+            bound_params => [ 10 ],
+            results      => [[ 'foo' ], [ 'baz' ]]
+        }        
   ));
   
-As you can see, a session is essentially made up a list of HASH references we call 'states'. Each state has a 'statement' and a set of 'results'. If DBD::Mock finds a session in the 'mock_session' attribute, then it will pass the current C<$dbh> and SQL statement to that DBD::Mock::Session. The SQL statement will be checked against the 'statement'  field in the current state. If it passes, then the 'results' of the current state will get feed to DBD::Mock through the 'mock_add_resultset' attribute. We then advance to the next state in the session, and wait for the next call through DBD::Mock. If at any time the SQL statement does not match the current state's 'statement', an error will be raised (and propagated through the normal DBI error handling based on your values for RaiseError and PrintError). 
+As you can see, a session is essentially made up a list of HASH references we call 'states'. Each state has a 'statement' and a set of 'results'. If DBD::Mock finds a session in the 'mock_session' attribute, then it will pass the current C<$dbh> and SQL statement to that DBD::Mock::Session. The SQL statement will be checked against the 'statement'  field in the current state. If it passes, then the 'results' of the current state will get feed to DBD::Mock through the 'mock_add_resultset' attribute. We then advance to the next state in the session, and wait for the next call through DBD::Mock. If at any time the SQL statement does not match the current state's 'statement', or the session runs out of available states, an error will be raised (and propagated through the normal DBI error handling based on your values for RaiseError and PrintError). 
+
+Also, as can be seen in the the session element, bound parameters can also be supplied and tested. In this statement, the SQL is compared, then when the statement is executed, the bound parameters are also checked. The bound parameters much match in both number of parameters and the parameters themselves, or an error will be raised.
 
 As can also be seen in the example above, 'statement' fields can come in many forms. The simplest is a string, which will be compared using C<eq> against the currently running statement. The next is a reg-exp reference, this too will get compared against the currently running statement. The last option is a CODE ref, this is sort of a catch-all to allow for a wide range of SQL comparison approaches (including using modules like SQL::Statement or SQL::Parser for detailed functional comparisons). The first argument to the CODE ref will be the currently active SQL statement to compare against, the second argument is a reference to the current state HASH (in case you need to alter the results, or store extra information). The CODE is evaluated in boolean context and throws and exception if it is false. 
 
@@ -1366,9 +1400,13 @@ B<new ($session_name, @session_states)>
 
 A C<$session_name> can be optionally be specified, along with at least one C<@session_states>. If you don't specify a C<$session_name>, then a default one will be created for you. The C<@session_states> must all be HASH references as well, if this conditions fail, an exception will be thrown.
 
-B<verify ($dbh, $SQL)>
+B<verify_statement ($dbh, $SQL)>
 
 This will check the C<$SQL> against the current state's 'statement' value, and if it passes will add the current state's 'results' to the C<$dbh>. If for some reason the 'statement' value is bad, not of the prescribed type, an exception is thrown. See above for more details.
+
+B<verify_bound_params ($dbh, $params)>
+
+If the 'bound_params' slot is available in the current state, this will check the C<$params> against the current state's 'bound_params' value. Both number of parameters and the parameters themselves must match, or an error will be raised.
 
 =back
 
@@ -1433,9 +1471,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
  File                           stmt branch   cond    sub    pod   time  total
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                    89.3   83.9   82.6   93.9    0.0  100.0   87.6
+ DBD/Mock.pm                    90.5   86.1   82.6   94.1    0.0  100.0   88.9
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- Total                          89.3   83.9   82.6   93.9    0.0  100.0   87.6
+ Total                          90.5   86.1   82.6   94.1    0.0  100.0   88.9
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO
