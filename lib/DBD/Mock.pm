@@ -1,6 +1,6 @@
 package DBD::Mock;
 
-# $Id: Mock.pm,v 1.11 2004/03/08 04:38:05 cwinters Exp $
+# $Id: Mock.pm,v 1.14 2004/05/09 04:49:20 cwinters Exp $
 
 #   Copyright (c) 2004 Chris Winters (spawned from original code
 #   Copyright (c) 1994 Tim Bunce)
@@ -9,13 +9,14 @@ package DBD::Mock;
 #   License or the Artistic License, as specified in the Perl README file.
 
 use strict;
-use vars qw( $drh $err );
+use vars qw( $drh $err $errstr );
 require DBI;
 
-$DBD::Mock::VERSION = sprintf( "%d.%02d", q$Revision: 1.11 $ =~ /(\d+)\.(\d+)/o );
+$DBD::Mock::VERSION = sprintf( "%d.%02d", q$Revision: 1.14 $ =~ /(\d+)\.(\d+)/o );
 
-$drh = undef;	# will hold driver handle
-$err = 0;		# the $DBI::err value; we never set it...
+$drh    = undef;    # will hold driver handle
+$err    = 0;		# will hold any error codes
+$errstr = '';       # will hold any error messages
 
 sub driver {
     return $drh if ( $drh );
@@ -25,6 +26,8 @@ sub driver {
         Name        => 'Mock',
         Version     => $DBD::Mock::VERSION,
         Attribution => 'DBD Mock driver by Chris Winters (orig. from Tim Bunce)',
+        Err         => \$DBD::Mock::err,
+ 		Errstr      => \$DBD::Mock::errstr,
     });
     return $drh;
 }
@@ -49,7 +52,15 @@ sub connect {
     $attr ||= {};
     my $dbh = DBI::_new_dbh( $drh, {
         Name                   => $dbname,
+
+        # holds all statements applied to handle until manually cleared
         mock_statement_history => [],
+
+        # ability to fake a failed DB connection
+        mock_can_connect       => 1,
+
+        # rest of attributes
+        %{ $attr },
     }) or return undef;
     return $dbh;
 }
@@ -68,6 +79,11 @@ use strict;
 use vars qw( $imp_data_size );
 $imp_data_size = 0;
 
+sub ping {
+ 	my ( $dbh ) = @_;
+ 	return $dbh->{mock_can_connect};
+}
+
 sub prepare {
     my( $dbh, $statement ) = @_;
 
@@ -78,16 +94,40 @@ sub prepare {
     );
 
     # If we have available resultsets seed the tracker with one
-    if ( my $all_rs = $dbh->FETCH( 'mock_resultsets' ) ) {
-        my $rs = shift @{ $all_rs };
+
+    my ( $rs );
+    if ( my $all_rs = $dbh->{mock_rs} ) {
+        if ( my $by_name = $all_rs->{named}{ $statement } ) {
+            $rs = $by_name;
+        }
+        else {
+            $rs = shift @{ $all_rs->{ordered} };
+        }
+    }
+    if ( ref $rs eq 'ARRAY' and scalar @{ $rs } > 0 ) {
         my $fields = shift @{ $rs };
         $track_params{return_data} = $rs;
         $track_params{fields}      = $fields;
+        $sth->STORE( NAME          => $fields );
         $sth->STORE( NUM_OF_FIELDS => scalar @{ $fields } );
     }
     else {
         $sth->trace_msg( 'No return data set in DBH', 1 );
     }
+
+ 	# do not allow a statement handle to be created if there is no
+ 	# connection present.
+
+ 	unless ( $dbh->FETCH( 'Active' ) ) {
+ 		$dbh->DBI::set_err( 1, "No connection present" );
+ 		if ( $dbh->FETCH( 'PrintError' ) ) {
+ 			warn "No connection present";
+ 		}
+ 		if ( $dbh->FETCH( 'RaiseError' ) ) {
+ 			die "No connection present";
+ 		}
+ 		return undef;
+ 	}
 
     # This history object will track everything done to the statement
 
@@ -110,6 +150,9 @@ sub FETCH {
     $dbh->trace_msg( "Fetching DB attrib '$attrib'\n" );
     if ( $attrib eq 'AutoCommit' ) {
         return $dbh->{mock_auto_commit};
+    }
+ 	elsif ( $attrib eq 'Active' ) {
+        return $dbh->{mock_can_connect};
     }
     elsif ( $attrib eq 'mock_all_history' ) {
         return $dbh->{mock_statement_history};
@@ -136,10 +179,27 @@ sub STORE {
         return [];
     }
     elsif ( $attrib eq 'mock_add_resultset' ) {
-        $dbh->{mock_resultsets} ||= [];
-        my @copied_values = @{ $value };
-        push @{ $dbh->{mock_resultsets} }, \@copied_values;
-        return \@copied_values;
+        $dbh->{mock_rs} ||= { named   => {},
+                              ordered => [] };
+        if ( ref $value eq 'ARRAY' ) {
+            my @copied_values = @{ $value };
+            push @{ $dbh->{mock_rs}{ordered} }, \@copied_values;
+            return \@copied_values;
+        }
+        elsif ( ref $value eq 'HASH' ) {
+            my $name = $value->{sql};
+            unless ( $name ) {
+                die "Indexing resultset by name requires passing in 'sql' ",
+                    "as hashref key to 'mock_add_resultset'.";
+            }
+            my @copied_values = @{ $value->{results} };
+            $dbh->{mock_rs}{named}{ $name } = \@copied_values;
+            return \@copied_values;
+        }
+        else {
+            die "Must provide an arrayref or hashref when adding ",
+                "resultset via 'mock_add_resultset'.\n";
+        }
     }
     elsif ( $attrib =~ /^mock/ ) {
         return $dbh->{ $attrib } = $value;
@@ -172,20 +232,42 @@ sub bind_param {
 
 sub execute {
     my ( $sth, @params ) = @_;
+
+    unless ( $sth->{Database}->{mock_can_connect} ) {
+ 		$sth->DBI::set_err( 1, "No connection present" );
+ 		if ( $sth->FETCH( 'PrintError' ) ) {
+ 			warn "No connection present";
+            return 0;
+ 		}
+ 		if ( $sth->FETCH( 'RaiseError' ) ) {
+ 			die "No connection present";
+ 		}
+    }
+
     my $tracker = $sth->FETCH( 'mock_my_history' );
     if ( @params ) {
         $tracker->bound_param_trailing( @params );
     }
     $tracker->mark_executed;
     my $fields = $tracker->fields;
-    $sth->STORE( NAME          => $fields );
-    $sth->STORE( NUM_OF_FIELDS => @{ $fields } );
     $sth->STORE( NUM_OF_PARAMS => $tracker->num_params );
     return '0E0';
 }
 
 sub fetch {
     my( $sth ) = @_;
+
+    unless ( $sth->{Database}->{mock_can_connect} ) {
+ 		$sth->DBI::set_err( 1, "No connection present" );
+ 		if ( $sth->FETCH( 'PrintError' ) ) {
+ 			warn "No connection present";
+            return undef;
+ 		}
+ 		if ( $sth->FETCH( 'RaiseError' ) ) {
+ 			die "No connection present";
+ 		}
+    }
+
     my $tracker = $sth->FETCH( 'mock_my_history' );
     return $tracker->next_record;
 }
@@ -212,6 +294,9 @@ sub FETCH {
     elsif ( $attrib eq 'TYPE' ) {
         my $num_fields = $tracker->num_fields;
         return [ map { $DBI::SQL_VARCHAR } ( 0 .. $num_fields ) ];
+    }
+    elsif ( $attrib eq 'Active' ) {
+        return $tracker->is_active;
     }
     elsif ( $attrib !~ /^mock/ ) {
         return $sth->SUPER::FETCH( $attrib );
@@ -316,6 +401,17 @@ sub bound_param {
 sub bound_param_trailing {
     my ( $self, @values ) = @_;
     push @{ $self->{bound_params} }, @values;
+}
+
+# Rely on the DBI's notion of Active: a statement is active if it's
+# currently in a SELECT and has more records to fetch
+
+sub is_active {
+    my ( $self, $value ) = @_;
+    return 0 unless ( $self->statement =~ /^\s*select/ism );
+    return 0 unless ( $self->is_executed );
+    return 0 if ( $self->is_depleted );
+    return 1;
 }
 
 sub is_finished {
@@ -618,6 +714,133 @@ database handle in the order they were created. Each history object
 can then report information about the SQL statement used to create it,
 the bound parameters, etc..
 
+B<mock_can_connect>
+
+This statement allows you to simulate a downed database connection.
+This is useful in testing how your application/tests will perform in
+the face of some kind of catastrophic event such as a network outage
+or database server failure. It is a simple boolean value which
+defaults to on, and can be set like this:
+
+ # turn the database off
+ $dbh->{mock_can_connect} = 0;
+ 
+ # turn it back on again
+ $dbh->{mock_can_connect} = 1;
+
+The statement handle checks this value as well, so something like this
+will fail in the expected way:
+
+ $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+ $dbh->{mock_can_connect} = 0;
+ 
+ # blows up!
+ my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
+ if ( $@ ) {
+     # Here, $DBI::errstr = 'No connection present'
+ }
+
+Turning off the database after a statement prepare will fail on the
+statement C<execute()>, which is hopefully what you would expect:
+
+ $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+ 
+ # ok!
+ my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
+ $dbh->{mock_can_connect} = 0;
+ 
+ # blows up!
+ $sth->execute;
+
+Similarly:
+
+ $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+ 
+ # ok!
+ my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
+ 
+ # ok!
+ $sth->execute;
+
+ $dbh->{mock_can_connect} = 0;
+ 
+ # blows up!
+ my $row = $sth->fetchrow_arrayref;
+
+Note: The handle attribute C<Active> and the handle method C<ping>
+will behave according to the value of C<mock_can_connect>. So if
+C<mock_can_connect> were to be set to 0 (or off), then both C<Active>
+and C<ping> would return false values (or 0).
+
+B<mock_add_resultset( \@resultset | \%sql_and_resultset )>
+
+This stocks the database handle with a record set, allowing you to
+seed data for your application to see if it works properly.. Each
+recordset is a simple arrayref of arrays with the first arrayref being
+the fieldnames used. Every time a statement handle is created it asks
+the database handle if it has any resultsets available and if so uses
+it.
+
+Here is a sample usage, partially from the test suite:
+
+ my @user_results = (
+    [ 'login', 'first_name', 'last_name' ],
+    [ 'cwinters', 'Chris', 'Winters' ],
+    [ 'bflay', 'Bobby', 'Flay' ],
+    [ 'alincoln', 'Abe', 'Lincoln' ],
+ );
+ my @generic_results = (
+    [ 'foo', 'bar' ],
+    [ 'this_one', 'that_one' ],
+    [ 'this_two', 'that_two' ],
+ );
+ 
+ my $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+ $dbh->{mock_add_resultset} = \@user_results;    # add first resultset
+ $dbh->{mock_add_resultset} = \@generic_results; # add second resultset
+ my ( $sth );
+ eval {
+     $sth = $dbh->prepare( 'SELECT login, first_name, last_name FROM foo' );
+     $sth->execute();
+ };
+
+ # this will fetch rows from the first resultset...
+ my $row1 = $sth->fetchrow_arrayref;
+ my $user1 = User->new( login => $row->[0],
+                        first => $row->[1],
+                        last  => $row->[2] );
+ is( $user1->full_name, 'Chris Winters' );
+ 
+ my $row2 = $sth->fetchrow_arrayref;
+ my $user2 = User->new( login => $row->[0],
+                        first => $row->[1],
+                        last  => $row->[2] );
+ is( $user2->full_name, 'Bobby Flay' );
+ ...
+ 
+ my $sth_generic = $dbh->prepare( 'SELECT foo, bar FROM baz' );
+ $sth_generic->execute;
+ 
+ # this will fetch rows from the second resultset...
+ my $row = $sth->fetchrow_arrayref;
+
+You can also associate a resultset with a particular SQL statement
+instead of adding them in the order they will be fetched:
+
+ $dbh->{mock_add_resultset} = {
+     sql     => 'SELECT foo, bar FROM baz',
+     results => [
+         [ 'foo', 'bar' ],
+         [ 'this_one', 'that_one' ],
+         [ 'this_two', 'that_two' ],
+     ],
+ };
+
+This will return the given results when the statement 'SELECT foo, bar
+FROM baz' is prepared. Note that they will be returned B<every time>
+the statement is prepared, not just the first. (This behavior could
+change.)
+
 B<mock_clear_history>
 
 If set to a true value all previous statement history operations will
@@ -645,6 +868,11 @@ histories from each other. A typical sequence will look like:
  ...
 
 =head2 Statement Handle Properties
+
+B<Active>
+
+Returns true if the handle is a 'SELECT' and has more records to
+fetch, false otherwise. (From the DBI.)
 
 B<mock_statement>
 
@@ -790,6 +1018,12 @@ B<current_record_num> (Statement attribute 'mock_current_record_num')
 
 Gets/sets the current record number.
 
+B<is_active()> (Statement attribute 'Active')
+
+Returns true if the statement is a SELECT and has more records to
+fetch, false otherwise. (This is from the DBI, see the 'Active' docs
+under 'ATTRIBUTES COMMON TO ALL HANDLES'.)
+
 B<is_executed( $yes_or_no )> (Statement attribute 'mock_is_executed')
 
 Sets the state of the tracker 'executed' flag.
@@ -859,3 +1093,5 @@ it under the same terms as Perl itself.
 =head1 AUTHORS
 
 Chris Winters E<lt>chris@cwinters.comE<gt>
+
+Stevan Little E<lt>stevan@iinteractive.comE<gt>

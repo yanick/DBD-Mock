@@ -1,5 +1,18 @@
 Revision history for Perl extension DBD::Mock.
 
+0.10  Sat May  8 14:12:39 EDT 2004
+
+      - Incorporate number of patches from Stevan Little to implement
+      'mock_can_connect', which allows you to simulate a downed
+      database. Add supporting tests for database and statement usage.
+
+      - Add the ability for 'mock_add_resultset' to associate a
+      resultset with a particular SQL statement. Thanks to Stevan for
+      the idea.
+
+      - Add documentation for database handle property
+      'mock_add_resultset'
+
 0.02  Tue Mar  9 12:56:54 EST 2004
 
       Add 'VERSION' to MANIFEST, thanks to Mike Castle for the note.

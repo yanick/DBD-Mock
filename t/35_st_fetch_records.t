@@ -1,50 +1,66 @@
 # -*-perl-*-
 
-# $Id: 35_st_fetch_records.t,v 1.1 2004/02/04 21:36:43 cwinters Exp $
+# $Id: 35_st_fetch_records.t,v 1.3 2004/05/09 04:48:46 cwinters Exp $
 
 use strict;
-use Test::More tests => 32;
+use Test::More tests => 37;
 use Data::Dumper qw( Dumper );
 
 require DBI;
 
-my @rs_one = (
+my @rs_foo = (
     [ 'this', 'that' ],
     [ 'this_one', 'that_one' ],
     [ 'this_two', 'that_two' ],
 );
+my $foo_sql = 'SELECT this, that FROM foo';
 
-my @rs_two = (
+my @rs_login = (
     [ 'login', 'first_name', 'last_name' ],
     [ 'cwinters', 'Chris', 'Winters' ],
     [ 'bflay', 'Bobby', 'Flay' ],
     [ 'alincoln', 'Abe', 'Lincoln' ],
 );
+my $login_sql = 'SELECT login, first_name, last_name FROM foo';
 
 my $dbh = DBI->connect( 'DBI:Mock:', '', '' );
 
-# Seed the handle with two resultsets...
+# Seed the handle with two resultsets
 
-$dbh->{mock_add_resultset} = [ @rs_one ];
-$dbh->{mock_add_resultset} = [ @rs_two ];
+# the first one ordered
+$dbh->{mock_add_resultset} = [ @rs_foo ];
+
+# the second one named
+$dbh->{mock_add_resultset} = { sql     => $login_sql,
+                               results => \@rs_login };
 
 # run the first one
 {
     my ( $sth );
     eval {
-        $sth = $dbh->prepare( 'SELECT this, that FROM foo' );
+        $sth = $dbh->prepare( $foo_sql );
         $sth->execute();
     };
-    check_resultset( $sth, [ @rs_one ] );
+    check_resultset( $sth, [ @rs_foo ] );
 }
 
 {
     my ( $sth );
     eval {
-        $sth = $dbh->prepare( 'SELECT login, first_name, last_name FROM foo' );
+        $sth = $dbh->prepare( $login_sql );
         $sth->execute();
     };
-    check_resultset( $sth, [ @rs_two ] );
+    check_resultset( $sth, [ @rs_login ] );
+}
+
+{
+    my ( $sth );
+    eval {
+        $sth = $dbh->prepare( q{INSERT INTO foo VALUES ( 'Don Corleone' )} );
+        $sth->execute();
+    };
+ 	ok( ! $sth->{Active},
+        '...this should not be an active handle' );
 }
 
 sub check_resultset {
@@ -54,6 +70,8 @@ sub check_resultset {
         'Correct number of records reported by statement' );
     is( $sth->{mock_current_record_num}, 0,
         'Current record number correct before fetching' );
+    ok( $sth->{Active},
+        '... this should be an active handle' );
     for ( my $i = 0; $i < scalar @{ $check }; $i++ ) {
         my $rec_num = $i + 1;
         my $this_check = $check->[$i];
@@ -71,6 +89,8 @@ sub check_resultset {
         if ( $rec_num == scalar @{ $check } ) {
             ok( $sth->{mock_is_depleted},
                 'Resultset depleted properly' );
+            ok( ! $sth->{Active},
+                '...this should not be an active handle anymore' );
         }
         else {
             ok( ! $sth->{mock_is_depleted},
