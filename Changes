@@ -1,5 +1,19 @@
 Revision history for Perl extension DBD::Mock.
 
+0.16 Sat Oct 30 2004
+    - minor change to the DBD::Mock::StatementTrack::Iterator
+      behavior. It no longer derefs the history array, so it
+      maintains a reference to it and therefore can be used like
+      this:
+          get-statement-iterator
+          run-query
+          check-next-statement-in-iterator
+          run-query          
+          check-next-statement-in-iterator
+          ...
+      This prevents the need to re-fetch the iterator after 
+      each query. 
+
 0.15 Fri Oct 29 2004
     - added the DBD::Mock::StatementTrack::Iterator
       object which can be accessed from the 

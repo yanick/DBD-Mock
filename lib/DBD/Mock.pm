@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '0.15';
+our $VERSION = '0.16';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -237,7 +237,7 @@ sub FETCH {
         return $dbh->{mock_statement_history};
     }
     elsif ($attrib eq 'mock_all_history_iterator') {
-        return DBD::Mock::StatementTrack::Iterator->new(@{$dbh->{mock_statement_history}});
+        return DBD::Mock::StatementTrack::Iterator->new($dbh->{mock_statement_history});
     }    
     elsif ($attrib =~ /^mock/) {
         return $dbh->{$attrib};
@@ -670,10 +670,10 @@ use strict;
 use warnings;
 
 sub new {
-    my ($class, @history) = @_;
+    my ($class, $history) = @_;
     return bless { 
             pointer => 0, 
-            history => [ @history ] 
+            history => $history || [] 
             } => $class;
 }
 
@@ -1374,9 +1374,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ------------------------ ------ ------ ------ ------ ------ ------ ------
  File                       stmt branch   cond    sub    pod   time  total
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                89.0   82.0   87.5   93.1    0.0  100.0   87.2
+ DBD/Mock.pm                89.0   82.0   85.3   93.1    0.0  100.0   87.0
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- Total                      89.0   82.0   87.5   93.1    0.0  100.0   87.2
+ Total                      89.0   82.0   85.3   93.1    0.0  100.0   87.0
  ------------------------ ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO
