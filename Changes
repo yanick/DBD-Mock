@@ -1,5 +1,9 @@
 Revision history for Perl extension DBD::Mock.
 
+0.02  Tue Mar  9 12:56:54 EST 2004
+
+      Add 'VERSION' to MANIFEST, thanks to Mike Castle for the note.
+
 0.01  Sun Mar  7 23:24:24 EST 2004
 
       Initial version spawned from DBD::NullP shipped with the

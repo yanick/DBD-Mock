@@ -3,6 +3,7 @@ Makefile.PL
 MANIFEST
 META.yml
 README
+VERSION
 DBD/Mock.pm
 t/00_basic.t
 t/10_db_handle.t
