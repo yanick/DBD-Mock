@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '0.16';
+our $VERSION = '0.17';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -189,11 +189,11 @@ sub prepare {
     }
     
     if (ref($rs) eq 'ARRAY' && scalar(@{$rs}) > 0 ) {
-        my $fields = shift @{ $rs };
+        my $fields = shift @{$rs};
         $track_params{return_data} = $rs;
         $track_params{fields}      = $fields;
         $sth->STORE(NAME           => $fields);
-        $sth->STORE(NUM_OF_FIELDS  => scalar @{ $fields });
+        $sth->STORE(NUM_OF_FIELDS  => scalar @{$fields});
     }
     else {
         $sth->trace_msg('No return data set in DBH', 1);
@@ -352,14 +352,14 @@ use warnings;
 $DBD::Mock::st::imp_data_size = 0;
 
 sub bind_param {
-    my ( $sth, $param_num, $val, $attr ) = @_;
+    my ($sth, $param_num, $val, $attr) = @_;
     my $tracker = $sth->FETCH( 'mock_my_history' );
     $tracker->bound_param( $param_num, $val );
     return 1;
 }
 
 sub execute {
-    my ( $sth, @params ) = @_;
+    my ($sth, @params) = @_;
 
     unless ($sth->{Database}->{mock_can_connect}) {
         DBD::Mock::_error_handler($sth->{Database}, "No connection present");
@@ -377,7 +377,7 @@ sub execute {
 }
 
 sub fetch {
-    my( $sth ) = @_;
+    my ($sth) = @_;
 
     unless ($sth->{Database}->{mock_can_connect}) {
         DBD::Mock::_error_handler($sth->{Database}, "No connection present");
@@ -389,8 +389,13 @@ sub fetch {
 }
 
 sub finish {
-    my ( $sth ) = @_;
+    my ($sth) = @_;
     $sth->FETCH( 'mock_my_history' )->is_finished( 'yes' );
+}
+
+sub rows {
+    my ($sth) = @_;
+    $sth->FETCH('mock_num_rows');
 }
 
 sub FETCH {
@@ -440,9 +445,9 @@ sub FETCH {
     elsif ( $attrib eq 'mock_params' ) {
         return $tracker->bound_params;
     }
-    elsif ( $attrib eq 'mock_num_records' ) {
-        return scalar @{$tracker->return_data};
-    }
+    elsif ( $attrib eq 'mock_num_records' || $attrib eq 'mock_num_rows' ) {
+        return $tracker->num_rows;
+    }    
     elsif ( $attrib eq 'mock_current_record_num' ) {
         return $tracker->current_record_num;
     }
@@ -543,6 +548,11 @@ sub new {
 sub num_fields {
     my ($self) = @_;
     return scalar @{$self->{fields}};
+}
+
+sub num_rows {
+    my ($self) = @_;
+    return scalar @{$self->{return_data}};
 }
 
 sub num_params {
@@ -1045,6 +1055,29 @@ FROM baz' is prepared. Note that they will be returned B<every time>
 the statement is prepared, not just the first. (This behavior could
 change.)
 
+It should also be noted that the C<rows> method will return the number of
+records stocked in the result set. So if your code/application makes use of
+the C<$sth-E<gt>rows> method for things like UPDATE and DELETE calls you
+should stock the result set like so:
+
+ $dbh->{mock_add_resultset} = {
+     sql     => 'UPDATE foo SET baz = 1, bar = 2',
+     # this will appear to have updated 3 rows
+     results => [[ 'rows' ], [], [], []],
+ };
+
+ # or ...
+ 
+ $dbh->{mock_add_resultset} = {
+     sql     => 'DELETE FROM foo WHERE bar = 2',
+     # this will appear to have deleted 1 row
+     results => [[ 'rows' ], []],
+ };
+ 
+Now I admit this is not the most elegant way to go about this, but it works
+for me for now, and until I can come up with a better method, or someone sends
+me a patch ;) it will do for now.
+
 B<mock_last_insert_id>
 
 This attribute is incremented each time an INSERT statement is passed
@@ -1156,6 +1189,11 @@ B<mock_num_records>
 
 Number of records the mock statement was stocked with; if never
 stocked it is still 0. (Some weirdos might expect undef...)
+
+B<mock_num_rows>
+
+This returns the same value as I<mock_num_records>. And is what is returned
+by the C<rows> method of the statement handle.
 
 B<mock_current_record_num>
 
@@ -1275,6 +1313,10 @@ B<num_fields>
 
 Returns the number of fields set in the 'fields' parameter.
 
+B<num_rows>
+
+Returns the number of records in the current result set.
+
 B<num_params>
 
 Returns the number of parameters set in the 'bound_params' parameter.
@@ -1374,9 +1416,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ------------------------ ------ ------ ------ ------ ------ ------ ------
  File                       stmt branch   cond    sub    pod   time  total
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                89.0   82.0   85.3   93.1    0.0  100.0   87.0
+ DBD/Mock.pm                89.1   82.0   86.5   93.3    0.0  100.0   87.2
  ------------------------ ------ ------ ------ ------ ------ ------ ------
- Total                      89.0   82.0   85.3   93.1    0.0  100.0   87.0
+ Total                      89.1   82.0   86.5   93.3    0.0  100.0   87.2
  ------------------------ ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO

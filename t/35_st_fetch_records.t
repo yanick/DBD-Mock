@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 39;
+use Test::More tests => 43;
 
 BEGIN {
     use_ok('DBD::Mock');  
@@ -72,6 +72,10 @@ sub check_resultset {
     my $fields  = shift @{ $check };
     is( $sth->{mock_num_records}, scalar @{ $check },
         'Correct number of records reported by statement' );
+    is( $sth->{mock_num_rows}, scalar @{ $check },
+        'Correct number of rows reported by statement' );        
+    is( $sth->rows, scalar @{ $check },
+        'Correct number of rows reported by statement' );        
     is( $sth->{mock_current_record_num}, 0,
         'Current record number correct before fetching' );
     ok( $sth->{Active},

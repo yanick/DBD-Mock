@@ -1,5 +1,16 @@
 Revision history for Perl extension DBD::Mock.
 
+0.17 Thurs Nov 4 2004
+    - added the following items:
+        - a 'mock_num_rows' attribute which will give you 
+          the number of records affected/returned by the
+          last statement
+        - a num_rows method in the DBD::Mock::StatementTrack 
+          object, which is where the above attribute gets it's
+          value
+    - added the 'rows' method for statement handles (which didnt
+      work before)
+
 0.16 Sat Oct 30 2004
     - minor change to the DBD::Mock::StatementTrack::Iterator
       behavior. It no longer derefs the history array, so it
