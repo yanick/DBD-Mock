@@ -1,5 +1,18 @@
 Revision history for Perl extension DBD::Mock.
 
+0.18 Wed Jan 5 2004
+    - added reset() method to the 
+      DBD::Mock::StatementTrack::Iterator object
+        - added test and docs for this
+        
+    - added the DBD::Mock::Session object and added
+      the support for it in the DBD::Mock driver
+        - added tests and docs for this
+        - Thanks to Rob Kinyon and Chris Winters for 
+          their feedback on this feature
+
+    - some general POD cleanup and formatting
+
 0.17 Thurs Nov 4 2004
     - added the following items:
         - a 'mock_num_rows' attribute which will give you 

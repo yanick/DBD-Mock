@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '0.17';
+our $VERSION = '0.18';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -168,6 +168,18 @@ sub prepare {
         return undef;
     }
     
+    if (my $session = $dbh->FETCH('mock_session')) {
+        eval {
+            $session->verify($dbh, $statement);
+        };
+        if ($@) {
+            my $session_error = $@;
+            chomp $session_error;
+            DBD::Mock::_error_handler($dbh, "Session Error: ${session_error}. Statement: ${statement}");
+            return undef;
+        }        
+    }    
+    
     my $sth = DBI::_new_sth($dbh, { Statement => $statement });
     
     $dbh->{mock_last_insert_id}++ if ($statement =~ /^\s*?INSERT/);
@@ -300,6 +312,7 @@ sub STORE {
         $dbh->{mock_rs} ||= { named   => {},
                               ordered => [] };
         if ( ref $value eq 'ARRAY' ) {
+#            print STDERR "mock_add_resultset: " . (join " | " => map { join ", " => @{$_} } @{$value}) . "\n";        
             my @copied_values = @{$value};
             push @{$dbh->{mock_rs}{ordered}}, \@copied_values;
             return \@copied_values;
@@ -323,6 +336,11 @@ sub STORE {
         # we start at one minus the start id
         # so that the increment works
         $dbh->{mock_last_insert_id} = $value - 1;
+    }
+    elsif ($attrib eq 'mock_session') {
+        (defined($value) && ref($value) && UNIVERSAL::isa($value, 'DBD::Mock::Session'))
+            || die "Only DBD::Mock::Session objects can be placed into the 'mock_session' slot\n";
+        $dbh->{mock_session} = $value;
     }
     elsif ($attrib =~ /^mock/) {  
         return $dbh->{$attrib} = $value;
@@ -693,6 +711,73 @@ sub next {
     return $self->{history}->[$self->{pointer}++];
 }
 
+sub reset { (shift)->{pointer} = 0 }
+
+package DBD::Mock::Session;
+
+use strict;
+use warnings;
+
+my $INSTANCE_COUNT = 1;
+
+sub new {
+    my $class = shift;
+    (@_) || die "You must specify at least one session state";
+    my $session_name;
+    if (ref($_[0])) {
+        $session_name = 'Session ' . $INSTANCE_COUNT;
+    }
+    else {
+        $session_name = shift;
+    }
+    my @session_states = @_;
+    (@session_states) 
+        || die "You must specify at least one session state";    
+    (ref($_) eq 'HASH')
+        || die "You must specify session states as HASH refs"
+            foreach @session_states;
+    $INSTANCE_COUNT++;            
+    return bless { 
+            name        => $session_name,
+            states      => \@session_states,
+            state_index => 0
+            } => $class;
+}
+
+sub name { (shift)->{name} }
+
+sub verify {
+    my ($self, $dbh, $statement) = @_;
+    my $current_state = $self->{states}->[$self->{state_index}];
+    # make sure our state is good
+    (exists ${$current_state}{statement} && exists ${$current_state}{results})
+        || die "Bad state '" . $self->{state_index} .  "' in DBD::Mock::Session (" . $self->{name} . ")";
+    # try the SQL
+    my $SQL = $current_state->{statement};
+#    print STDERR "Testing statement:\n\tgot:      $statement\n\texpected: $SQL\n";    
+    unless (ref($SQL)) {
+        ($SQL eq $statement) 
+            || die "Statement does not match current state in DBD::Mock::Session (" . $self->{name} . ")";
+    }
+    elsif (ref($SQL) eq 'Regexp') {
+        ($statement =~ /$SQL/) 
+            || die "Statement does not match current state in DBD::Mock::Session (" . $self->{name} . ")";
+    }
+    elsif (ref($SQL) eq 'CODE') {
+        ($SQL->($statement, $current_state)) 
+            || die "Statement does not match current state in DBD::Mock::Session (" . $self->{name} . ")";
+    }
+    else {
+        die "Bad 'statement' value '$SQL' in current state in DBD::Mock::Session (" . $self->{name} . ")";
+    }
+    # if we are hear then things worked out well :)
+#    print STDERR "Adding Results: " . (join " | " => map { join ", " => @{$_} } @{$current_state->{results}}) . "\n";
+    $dbh->STORE('mock_add_resultset' => $current_state->{results});
+    # now we can get ready 
+    # for the next statement
+    $self->{state_index}++;
+}
+
 1;
 
 __END__
@@ -705,91 +790,60 @@ DBD::Mock - Mock database driver for testing
 
  use DBI;
 
- # ...connect as normal, using 'Mock' as your driver name
+ # connect to your as normal, using 'Mock' as your driver name
  my $dbh = DBI->connect( 'DBI:Mock:', '', '' )
                || die "Cannot create handle: $DBI::errstr\n";
  
- # ...create a statement handle as normal and execute with parameters
+ # create a statement handle as normal and execute with parameters
  my $sth = $dbh->prepare( 'SELECT this, that FROM foo WHERE id = ?' );
  $sth->execute( 15 );
  
  # Now query the statement handle as to what has been done with it
- my $params = $sth->{mock_params};
+ my $mock_params = $sth->{mock_params};
  print "Used statement: ", $sth->{mock_statement}, "\n",
        "Bound parameters: ", join( ', ', @{ $params } ), "\n";
 
 =head1 DESCRIPTION
 
-=head2 Purpose
+Testing with databases can be tricky. If you are developing a system married to a single database then you can make some assumptions about your environment and ask the user to provide relevant connection information. But if you need to test a framework that uses DBI, particularly a framework that uses different types of persistence schemes, then it may be more useful to simply verify what the framework is trying to do -- ensure the right SQL is generated and that the correct parameters are bound. C<DBD::Mock> makes it easy to just modify your configuration (presumably held outside your code) and just use it instead of C<DBD::Foo> (like L<DBD::Pg> or L<DBD::mysql>) in your framework.
 
-Testing with databases can be tricky. If you are developing a system
-married to a single database then you can make some assumptions about
-your environment and ask the user to provide relevant connection
-information. But if you need to test a framework that uses DBI,
-particularly a framework that uses different types of persistence
-schemes, then it may be more useful to simply verify what the
-framework is trying to do -- ensure the right SQL is generated and
-that the correct parameters are bound. C<DBD::Mock> makes it easy to
-just modify your configuration (presumably held outside your code) and
-just use it instead of C<DBD::Foo> (like L<DBD::Pg> or L<DBD::mysql>)
-in your framework.
+There is no distinct area where using this module makes sense. (Some people may successfully argue that this is a solution looking for a problem...) Indeed, if you can assume your users have something like L<DBD::AnyData> or L<DBD::SQLite> or if you do not mind creating a dependency on them then it makes far more sense to use these legitimate driver implementations and test your application in the real world -- at least as much of the real world as you can create in your tests...
 
-There is no distinct area where using this module makes sense. (Some
-people may successfully argue that this is a solution looking for a
-problem...) Indeed, if you can assume your users have something like
-L<DBD::AnyData> or L<DBD::SQLite> or if you do not mind creating a
-dependency on them then it makes far more sense to use these
-legitimate driver implementations and test your application in the
-real world -- at least as much of the real world as you can create in
-your tests...
-
-And if your database handle exists as a package variable or something
-else easily replaced at test-time then it may make more sense to use
-L<Test::MockObject> to create a fully dynamic handle. There is an
-excellent article by chromatic about using L<Test::MockObject> in this
-and other ways, strongly recommended. (See L<SEE ALSO> for a link)
+And if your database handle exists as a package variable or something else easily replaced at test-time then it may make more sense to use L<Test::MockObject> to create a fully dynamic handle. There is an excellent article by chromatic about using L<Test::MockObject> in this and other ways, strongly recommended. (See L<SEE ALSO> for a link)
 
 =head2 How does it work?
 
-C<DBD::Mock> comprises a set of classes used by DBI to implement a
-database driver. But instead of connecting to a datasource and
-manipulating data found there it tracks all the calls made to the
-database handle and any created statement handles. You can then
-inspect them to ensure what you wanted to happen actually
-happened. For instance, say you have a configuration file with your
-database connection information:
+C<DBD::Mock> comprises a set of classes used by DBI to implement a database driver. But instead of connecting to a datasource and manipulating data found there it tracks all the calls made to the database handle and any created statement handles. You can then inspect them to ensure what you wanted to happen actually happened. For instance, say you have a configuration file with your database connection information:
 
- [DBI]
- dsn      = DBI:Pg:dbname=myapp
- user     = foo
- password = bar
+  [DBI]
+  dsn      = DBI:Pg:dbname=myapp
+  user     = foo
+  password = bar
 
-And this file is read in at process startup and the handle stored for
-other procedures to use:
+And this file is read in at process startup and the handle stored for other procedures to use:
 
- package ObjectDirectory;
+  package ObjectDirectory;
  
- my ( $DBH );
+  my ( $DBH );
  
- sub run_at_startup {
+  sub run_at_startup {
      my ( $class, $config ) = @_;
      $config ||= read_configuration( ... );
      my $dsn  = $config->{DBI}{dsn};
      my $user = $config->{DBI}{user};
      my $pass = $config->{DBI}{password};
      $DBH = DBI->connect( $dsn, $user, $pass ) || die ...;
- }
+  }
  
- sub get_database_handle {
+  sub get_database_handle {
      return $DBH;
- }
+  }
 
-A procedure might use it like this (ignoring any error handling for
-the moment):
+A procedure might use it like this (ignoring any error handling for the moment):
 
- package My::UserActions;
+  package My::UserActions;
  
- sub fetch_user {
+  sub fetch_user {
      my ( $class, $login ) = @_;
      my $dbh = ObjectDirectory->get_database_handle;
      my $sql = q{
@@ -801,56 +855,53 @@ the moment):
      $sth->execute( $login );
      my $row = $sth->fetchrow_arrayref;
      return ( $row ) ? User->new( $row ) : undef;
- }
+  }
 
 So for the purposes of our tests we just want to ensure that:
 
 =over 4
 
-=item 1.
+=item 1. The right SQL is being executed
 
-The right SQL is being executed
-
-=item 2.
-
-The right parameters are bound
+=item 2. The right parameters are bound
 
 =back
 
-Assume whether the SQL actually B<works> or not is irrelevant for this
-test :-)
+Assume whether the SQL actually B<works> or not is irrelevant for this test :-)
 
 To do that our test might look like:
 
- my $config = ObjectDirectory->read_configuration( ... );
- $config->{DBI}{dsn} = 'DBI:Mock:';
- ObjectDirectory->run_at_startup( $config );
- my $login_name = 'foobar';
- my $user = My::UserActions->fetch_user( $login_name );
+  my $config = ObjectDirectory->read_configuration( ... );
+  $config->{DBI}{dsn} = 'DBI:Mock:';
+  ObjectDirectory->run_at_startup( $config );
  
- # Get the handle from ObjectDirectory; this is the same handle used
- # in the 'fetch_user()' procedure above
- my $dbh = ObjectDirectory->get_database_handle();
+  my $login_name = 'foobar';
+  my $user = My::UserActions->fetch_user( $login_name );
  
- # Ask the database handle for the history of all statements executed
- # against it
- my $history = $dbh->{mock_all_history};
+  # Get the handle from ObjectDirectory; 
+  # this is the same handle used in the 
+  # 'fetch_user()' procedure above
+  my $dbh = ObjectDirectory->get_database_handle();
  
- # Now query that history record to see if our expectations match
- # reality
- is( scalar @{ $history }, 1,
-     'Correct number of statements executed' );
- my $login_st = $history->[0];
- like( $login_st->statement, qr/SELECT login_name.*FROM users WHERE login_name = ?/sm,
-       'Correct statement generated' );
- my $params = $login_st->bound_params;
- is( scalar @{ $params }, 1,
-     'Correct number of parameters bound' );
- is( $params->[0], $login_name,
-     'Correct value for parameter 1' );
+  # Ask the database handle for the history 
+  # of all statements executed against it
+  my $history = $dbh->{mock_all_history};
+ 
+  # Now query that history record to 
+  # see if our expectations match reality
+  cmp_ok(scalar(@{$history}), '==', 1, 'Correct number of statements executed' ;
 
- # Reset the handle for future operations
- $dbh->{mock_clear_history} = 1;
+  my $login_st = $history->[0]; 
+  like($login_st->statement, 
+      qr/SELECT login_name.*FROM users WHERE login_name = ?/sm,
+      'Correct statement generated' );
+      
+  my $params = $login_st->bound_params;
+  cmp_ok(scalar(@{$params}), '==', 1, 'Correct number of parameters bound');
+  is($params->[0], $login_name, 'Correct value for parameter 1' );
+
+  # Reset the handle for future operations
+  $dbh->{mock_clear_history} = 1;
 
 The list of properties and what they return is listed below. But in an overall view:
 
@@ -858,371 +909,301 @@ The list of properties and what they return is listed below. But in an overall v
 
 =item *
 
-A database handle contains the history of all statements created
-against it. Other properties set for the handle (e.g., 'PrintError',
-'RaiseError') are left alone and can be queried as normal, but they do
-not affect anything. (A future feature may track the sequence/history
-of these assignments but if there is no demand it probably will not
-get implemented.)
+A database handle contains the history of all statements created against it. Other properties set for the handle (e.g., 'PrintError', 'RaiseError') are left alone and can be queried as normal, but they do not affect anything. (A future feature may track the sequence/history of these assignments but if there is no demand it probably will not get implemented.)
 
 =item *
 
-A statement handle contains the statement it was prepared with plus
-all bound parameters or parameters passed via C<execute()>. It can
-also contain predefined results for the statement handle to 'fetch',
-track how many fetches were called and what its current record is.
+A statement handle contains the statement it was prepared with plus all bound parameters or parameters passed via C<execute()>. It can also contain predefined results for the statement handle to 'fetch', track how many fetches were called and what its current record is.
 
 =back
 
 =head2 A Word of Warning
 
-This may be an incredibly naive implementation of a DBD. But it works
-for me...
+This may be an incredibly naive implementation of a DBD. But it works for me ...
 
-=head1 PROPERTIES
+=head1 DBD::Mock
 
-Since this is a normal DBI statement handle we need to expose our
-tracking information as properties (accessed like a hash) rather than
-methods.
+Since this is a normal DBI statement handle we need to expose our tracking information as properties (accessed like a hash) rather than methods.
 
 =head2 Database Handle Properties
 
-B<mock_all_history>
+=over 4
 
-Returns an array reference with all history
-(a.k.a. C<DBD::Mock::StatementTrack>) objects created against the
-database handle in the order they were created. Each history object
-can then report information about the SQL statement used to create it,
-the bound parameters, etc..
+=item B<mock_all_history>
 
-B<mock_all_history_iterator>
+Returns an array reference with all history (a.k.a. C<DBD::Mock::StatementTrack>) objects created against the database handle in the order they were created. Each history object can then report information about the SQL statement used to create it, the bound parameters, etc..
 
-Returns a C<DBD::Mock::StatementTrack::Iterator> object which will iterate
-through the current set of C<DBD::Mock::StatementTrack> object in the 
-history. See the B<DBD::Mock::StatementTrack::Iterator> documentation below
-for more information.
+=item B<mock_all_history_iterator>
 
-B<mock_clear_history>
+Returns a C<DBD::Mock::StatementTrack::Iterator> object which will iterate through the current set of C<DBD::Mock::StatementTrack> object in the  history. See the B<DBD::Mock::StatementTrack::Iterator> documentation below for more information.
 
-If set to a true value all previous statement history operations will
-be erased. This B<includes> the history of currently open handles, so
-if you do something like:
+=item B<mock_clear_history>
 
- my $dbh = get_handle( ... );
- my $sth = $dbh->prepare( ... );
- $dbh->{mock_clear_history} = 1;
- $sth->execute( 'Foo' );
+If set to a true value all previous statement history operations will be erased. This B<includes> the history of currently open handles, so if you do something like:
 
-You will have no way to learn from the database handle that the
-statement parameter 'Foo' was bound.
+  my $dbh = get_handle( ... );
+  my $sth = $dbh->prepare( ... );
+  $dbh->{mock_clear_history} = 1;
+  $sth->execute( 'Foo' );
 
-This is useful mainly to ensure you can isolate the statement
-histories from each other. A typical sequence will look like:
+You will have no way to learn from the database handle that the statement parameter 'Foo' was bound.
 
- set handle to framework
- perform operations
- analyze mock database handle
- reset mock database handle history
- perform more operations
- analyze mock database handle
- reset mock database handle history
- ...
+This is useful mainly to ensure you can isolate the statement histories from each other. A typical sequence will look like:
 
-B<mock_can_connect>
+    set handle to framework
+    perform operations
+    analyze mock database handle
+    reset mock database handle history
+    perform more operations
+    analyze mock database handle
+    reset mock database handle history
+    ...
 
-This statement allows you to simulate a downed database connection.
-This is useful in testing how your application/tests will perform in
-the face of some kind of catastrophic event such as a network outage
-or database server failure. It is a simple boolean value which
-defaults to on, and can be set like this:
+=item B<mock_can_connect>
 
- # turn the database off
- $dbh->{mock_can_connect} = 0;
+This statement allows you to simulate a downed database connection. This is useful in testing how your application/tests will perform in the face of some kind of catastrophic event such as a network outage or database server failure. It is a simple boolean value which defaults to on, and can be set like this:
+
+  # turn the database off
+  $dbh->{mock_can_connect} = 0;
  
- # turn it back on again
- $dbh->{mock_can_connect} = 1;
+  # turn it back on again
+  $dbh->{mock_can_connect} = 1;
 
 The statement handle checks this value as well, so something like this
 will fail in the expected way:
 
- $dbh = DBI->connect( 'DBI:Mock:', '', '' );
- $dbh->{mock_can_connect} = 0;
+  $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+  $dbh->{mock_can_connect} = 0;
  
- # blows up!
- my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
- if ( $@ ) {
+  # blows up!
+  my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
+  if ( $@ ) {
      # Here, $DBI::errstr = 'No connection present'
- }
+  }
 
-Turning off the database after a statement prepare will fail on the
-statement C<execute()>, which is hopefully what you would expect:
+Turning off the database after a statement prepare will fail on the statement C<execute()>, which is hopefully what you would expect:
 
- $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+  $dbh = DBI->connect( 'DBI:Mock:', '', '' );
  
- # ok!
- my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
- $dbh->{mock_can_connect} = 0;
+  # ok!
+  my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
+  $dbh->{mock_can_connect} = 0;
  
- # blows up!
- $sth->execute;
+  # blows up!
+  $sth->execute;
 
 Similarly:
 
- $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+  $dbh = DBI->connect( 'DBI:Mock:', '', '' );
  
- # ok!
- my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
+  # ok!
+  my $sth = eval { $dbh->prepare( 'SELECT foo FROM bar' ) });
  
- # ok!
- $sth->execute;
+  # ok!
+  $sth->execute;
 
- $dbh->{mock_can_connect} = 0;
+  $dbh->{mock_can_connect} = 0;
  
- # blows up!
- my $row = $sth->fetchrow_arrayref;
+  # blows up!
+  my $row = $sth->fetchrow_arrayref;
 
-Note: The handle attribute C<Active> and the handle method C<ping>
-will behave according to the value of C<mock_can_connect>. So if
-C<mock_can_connect> were to be set to 0 (or off), then both C<Active>
-and C<ping> would return false values (or 0).
+Note: The handle attribute C<Active> and the handle method C<ping> will behave according to the value of C<mock_can_connect>. So if C<mock_can_connect> were to be set to 0 (or off), then both C<Active> and C<ping> would return false values (or 0).
 
-B<mock_add_resultset( \@resultset | \%sql_and_resultset )>
+=item B<mock_add_resultset( \@resultset | \%sql_and_resultset )>
 
-This stocks the database handle with a record set, allowing you to
-seed data for your application to see if it works properly.. Each
-recordset is a simple arrayref of arrays with the first arrayref being
-the fieldnames used. Every time a statement handle is created it asks
-the database handle if it has any resultsets available and if so uses
-it.
+This stocks the database handle with a record set, allowing you to seed data for your application to see if it works properly.. Each recordset is a simple arrayref of arrays with the first arrayref being the fieldnames used. Every time a statement handle is created it asks the database handle if it has any resultsets available and if so uses it.
 
 Here is a sample usage, partially from the test suite:
 
- my @user_results = (
+  my @user_results = (
     [ 'login', 'first_name', 'last_name' ],
     [ 'cwinters', 'Chris', 'Winters' ],
     [ 'bflay', 'Bobby', 'Flay' ],
     [ 'alincoln', 'Abe', 'Lincoln' ],
- );
- my @generic_results = (
+  );
+  my @generic_results = (
     [ 'foo', 'bar' ],
     [ 'this_one', 'that_one' ],
     [ 'this_two', 'that_two' ],
- );
+  );
  
- my $dbh = DBI->connect( 'DBI:Mock:', '', '' );
- $dbh->{mock_add_resultset} = \@user_results;    # add first resultset
- $dbh->{mock_add_resultset} = \@generic_results; # add second resultset
- my ( $sth );
- eval {
+  my $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+  $dbh->{mock_add_resultset} = \@user_results;    # add first resultset
+  $dbh->{mock_add_resultset} = \@generic_results; # add second resultset
+  my ( $sth );
+  eval {
      $sth = $dbh->prepare( 'SELECT login, first_name, last_name FROM foo' );
      $sth->execute();
- };
+  };
 
- # this will fetch rows from the first resultset...
- my $row1 = $sth->fetchrow_arrayref;
- my $user1 = User->new( login => $row->[0],
+  # this will fetch rows from the first resultset...
+  my $row1 = $sth->fetchrow_arrayref;
+  my $user1 = User->new( login => $row->[0],
                         first => $row->[1],
                         last  => $row->[2] );
- is( $user1->full_name, 'Chris Winters' );
+  is( $user1->full_name, 'Chris Winters' );
  
- my $row2 = $sth->fetchrow_arrayref;
- my $user2 = User->new( login => $row->[0],
+  my $row2 = $sth->fetchrow_arrayref;
+  my $user2 = User->new( login => $row->[0],
                         first => $row->[1],
                         last  => $row->[2] );
- is( $user2->full_name, 'Bobby Flay' );
- ...
+  is( $user2->full_name, 'Bobby Flay' );
+  ...
  
- my $sth_generic = $dbh->prepare( 'SELECT foo, bar FROM baz' );
- $sth_generic->execute;
+  my $sth_generic = $dbh->prepare( 'SELECT foo, bar FROM baz' );
+  $sth_generic->execute;
  
- # this will fetch rows from the second resultset...
- my $row = $sth->fetchrow_arrayref;
+  # this will fetch rows from the second resultset...
+  my $row = $sth->fetchrow_arrayref;
 
-You can also associate a resultset with a particular SQL statement
-instead of adding them in the order they will be fetched:
+You can also associate a resultset with a particular SQL statement instead of adding them in the order they will be fetched:
 
- $dbh->{mock_add_resultset} = {
+  $dbh->{mock_add_resultset} = {
      sql     => 'SELECT foo, bar FROM baz',
      results => [
          [ 'foo', 'bar' ],
          [ 'this_one', 'that_one' ],
          [ 'this_two', 'that_two' ],
      ],
- };
+  };
 
-This will return the given results when the statement 'SELECT foo, bar
-FROM baz' is prepared. Note that they will be returned B<every time>
-the statement is prepared, not just the first. (This behavior could
-change.)
+This will return the given results when the statement 'SELECT foo, bar FROM baz' is prepared. Note that they will be returned B<every time> the statement is prepared, not just the first. (This behavior could change.)
 
-It should also be noted that the C<rows> method will return the number of
-records stocked in the result set. So if your code/application makes use of
-the C<$sth-E<gt>rows> method for things like UPDATE and DELETE calls you
-should stock the result set like so:
+It should also be noted that the C<rows> method will return the number of records stocked in the result set. So if your code/application makes use of the C<$sth-E<gt>rows> method for things like UPDATE and DELETE calls you should stock the result set like so:
 
- $dbh->{mock_add_resultset} = {
+  $dbh->{mock_add_resultset} = {
      sql     => 'UPDATE foo SET baz = 1, bar = 2',
      # this will appear to have updated 3 rows
      results => [[ 'rows' ], [], [], []],
- };
+  };
 
- # or ...
+  # or ...
  
- $dbh->{mock_add_resultset} = {
+  $dbh->{mock_add_resultset} = {
      sql     => 'DELETE FROM foo WHERE bar = 2',
      # this will appear to have deleted 1 row
      results => [[ 'rows' ], []],
- };
+  };
  
-Now I admit this is not the most elegant way to go about this, but it works
-for me for now, and until I can come up with a better method, or someone sends
-me a patch ;) it will do for now.
+Now I admit this is not the most elegant way to go about this, but it works for me for now, and until I can come up with a better method, or someone sends me a patch ;) it will do for now.
 
-B<mock_last_insert_id>
+=item B<mock_session>
 
-This attribute is incremented each time an INSERT statement is passed
-to prepare on a per-handle basis. It's starting value can be set with 
-the 'mock_start_insert_id' attribute (see below).
+This attribute can be used to set a current DBD::Mock::Session object. For more information on this, see the L<DBD::Mock::Session> docs below.
 
-B<mock_start_insert_id>
+=item B<mock_last_insert_id>
 
-This attribute can be used to set a start value for the 'mock_last_insert_id'
-attribute. It can also be used to effectively reset the 'mock_last_insert_id'
-attribute as well.
+This attribute is incremented each time an INSERT statement is passed to prepare on a per-handle basis. It's starting value can be set with  the 'mock_start_insert_id' attribute (see below).
 
-B<mock_add_parser>
+=item B<mock_start_insert_id>
 
-DBI provides some simple parsing capabilities for 'SELECT' statements
-to ensure that placeholders are bound properly. And typically you may
-simply want to check after the fact that a statement is syntactically
-correct, or at least what you expect.
+This attribute can be used to set a start value for the 'mock_last_insert_id' attribute. It can also be used to effectively reset the 'mock_last_insert_id' attribute as well.
 
-But other times you may want to parse the statement as it is prepared
-rather than after the fact. There is a hook in this mock database
-driver for you to provide your own parsing routine or object.
+=item B<mock_add_parser>
+
+DBI provides some simple parsing capabilities for 'SELECT' statements to ensure that placeholders are bound properly. And typically you may simply want to check after the fact that a statement is syntactically correct, or at least what you expect.
+
+But other times you may want to parse the statement as it is prepared rather than after the fact. There is a hook in this mock database driver for you to provide your own parsing routine or object.
 
 The syntax is simple:
 
- $dbh->{mock_add_parser} = sub {
+  $dbh->{mock_add_parser} = sub {
      my ( $sql ) = @_;
      unless ( $sql =~ /some regex/ ) {
          die "does not contain secret fieldname";
      }
- };
+  };
 
-You can also add more than one for a handle. They will be called in
-order, and the first one to fail will halt the parsing process:
+You can also add more than one for a handle. They will be called in order, and the first one to fail will halt the parsing process:
 
- $dbh->{mock_add_parser} = \&parse_update_sql;
- $dbh->{mock_add-parser} = \&parse_insert_sql;
+  $dbh->{mock_add_parser} = \&parse_update_sql;
+  $dbh->{mock_add-parser} = \&parse_insert_sql;
 
-Depending on the 'PrintError' and 'RaiseError' settings in the
-database handle any parsing errors encountered will issue a C<warn> or
-C<die>. No matter what the statement handle will be C<undef>.
+Depending on the 'PrintError' and 'RaiseError' settings in the database handle any parsing errors encountered will issue a C<warn> or C<die>. No matter what the statement handle will be C<undef>.
 
-Instead of providing a subroutine reference you can use an object. The
-only requirement is that it implements the method C<parse()> and takes
-a SQL statement as the only argument. So you should be able to do
-something like the following (untested):
+Instead of providing a subroutine reference you can use an object. The only requirement is that it implements the method C<parse()> and takes a SQL statement as the only argument. So you should be able to do something like the following (untested):
 
- my $parser = SQL::Parser->new( 'mysql', { RaiseError => 1 } );
- $dbh->{mock_add_parser} = $parser;
+  my $parser = SQL::Parser->new( 'mysql', { RaiseError => 1 } );
+  $dbh->{mock_add_parser} = $parser;
+
+=back
 
 =head2 Statement Handle Properties
 
-B<Active>
+=over 4
 
-Returns true if the handle is a 'SELECT' and has more records to
-fetch, false otherwise. (From the DBI.)
+=item B<Active>
 
-B<mock_statement>
+Returns true if the handle is a 'SELECT' and has more records to fetch, false otherwise. (From the DBI.)
 
-The SQL statement this statement handle was C<prepare>d with. So if
-the handle were created with:
+=item B<mock_statement>
 
- my $sth = $dbh->prepare( 'SELECT * FROM foo' );
+The SQL statement this statement handle was C<prepare>d with. So if the handle were created with:
 
-This would return:
-
- SELECT * FROM foo
-
-The original statement is unmodified so if you are checking against it
-in tests you may want to use a regex rather than a straight equality
-check. (However if you use a phrasebook to store your SQL externally
-you are a step ahead...)
-
-B<mock_fields>
-
-Fields used by the statement. As said elsewhere we do no analysis or
-parsing to find these, you need to define them beforehand. That said,
-you do not actually need this very often.
-
-Note that this returns the same thing as the normal statement property
-'FIELD'.
-
-B<mock_params>
-
-Returns an arrayref of parameters bound to this statement in the order
-specified by the bind type. For instance, if you created and stocked a
-handle with:
-
- my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? AND is_active = ?' );
- $sth->bind_param( 2, 'yes' );
- $sth->bind_param( 1, 7783 );
+  my $sth = $dbh->prepare( 'SELECT * FROM foo' );
 
 This would return:
 
- [ 7738, 'yes' ]
+  SELECT * FROM foo
 
-The same result will occur if you pass the parameters via C<execute()>
-instead:
+The original statement is unmodified so if you are checking against it in tests you may want to use a regex rather than a straight equality check. (However if you use a phrasebook to store your SQL externally you are a step ahead...)
 
- my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? AND is_active = ?' );
- $sth->execute( 7783, 'yes' );
+=item B<mock_fields>
 
-B<mock_records>
+Fields used by the statement. As said elsewhere we do no analysis or parsing to find these, you need to define them beforehand. That said, you do not actually need this very often.
 
-An arrayref of arrayrefs representing the records the mock statement
-was stocked with.
+Note that this returns the same thing as the normal statement property 'FIELD'.
 
-B<mock_num_records>
+=item B<mock_params>
 
-Number of records the mock statement was stocked with; if never
-stocked it is still 0. (Some weirdos might expect undef...)
+Returns an arrayref of parameters bound to this statement in the order specified by the bind type. For instance, if you created and stocked a handle with:
 
-B<mock_num_rows>
+  my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? AND is_active = ?' );
+  $sth->bind_param( 2, 'yes' );
+  $sth->bind_param( 1, 7783 );
 
-This returns the same value as I<mock_num_records>. And is what is returned
-by the C<rows> method of the statement handle.
+This would return:
 
-B<mock_current_record_num>
+  [ 7738, 'yes' ]
 
-Current record the statement is on; returns 0 in the instances when
-you have not yet called C<execute()> and if you have not yet called a
-C<fetch> method after the execute.
+The same result will occur if you pass the parameters via C<execute()> instead:
 
-B<mock_is_executed>
+  my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? AND is_active = ?' );
+  $sth->execute( 7783, 'yes' );
 
-Whether C<execute()> has been called against the statement
-handle. Returns 'yes' if so, 'no' if not.
+=item B<mock_records>
 
-B<mock_is_finished>
+An arrayref of arrayrefs representing the records the mock statement was stocked with.
 
-Whether C<finish()> has been called against the statement
-handle. Returns 'yes' if so, 'no' if not.
+=item B<mock_num_records>
 
-B<mock_is_depleted>
+Number of records the mock statement was stocked with; if never stocked it is still 0. (Some weirdos might expect undef...)
 
-Returns 'yes' if all the records in the recordset have been
-returned. If no C<fetch()> was executed against the statement, or If
-no return data was set this will return 'no'.
+=item B<mock_num_rows>
 
-B<mock_my_history>
+This returns the same value as I<mock_num_records>. And is what is returned by the C<rows> method of the statement handle.
 
-Returns a C<DBD::Mock::StatementTrack> object which tracks the
-actions performed by this statement handle. Most of the actions are
-separately available from the properties listed above, so you should
-never need this.
+=item B<mock_current_record_num>
+
+Current record the statement is on; returns 0 in the instances when you have not yet called C<execute()> and if you have not yet called a C<fetch> method after the execute.
+
+=item B<mock_is_executed>
+
+Whether C<execute()> has been called against the statement handle. Returns 'yes' if so, 'no' if not.
+
+=item B<mock_is_finished>
+
+Whether C<finish()> has been called against the statement handle. Returns 'yes' if so, 'no' if not.
+
+=item B<mock_is_depleted>
+
+Returns 'yes' if all the records in the recordset have been returned. If no C<fetch()> was executed against the statement, or If no return data was set this will return 'no'.
+
+=item B<mock_my_history>
+
+Returns a C<DBD::Mock::StatementTrack> object which tracks the actions performed by this statement handle. Most of the actions are separately available from the properties listed above, so you should never need this.
+
+=back
 
 =head1 DBD::Mock::Pool
 
@@ -1230,9 +1211,9 @@ This module can be used to emulate Apache::DBI style DBI connection
 pooling. Just as with Apache::DBI, you must enable DBD::Mock::Pool 
 before loading DBI.
 
- use DBD::Mock qw(Pool);
- # followed by ...
- use DBI;
+  use DBD::Mock qw(Pool);
+  # followed by ...
+  use DBI;
 
 While this may not seem to make a lot of sense in a single-process testing 
 scenario, it can be useful when testing code which assumes a multi-process
@@ -1245,9 +1226,9 @@ C<DBD::Mock::StatementTrack> object. This is most useful when you are
 reviewing multiple statements at a time, otherwise you might want to
 use the C<mock_*> statement handle attributes instead.
 
-=head2 Methods
+=over 4
 
-B<new( %params )>
+=item B<new( %params )>
 
 Takes the following parameters:
 
@@ -1267,99 +1248,135 @@ B<bound_params>: Arrayref of bound parameters
 
 =back
 
-B<statement> (Statement attribute 'mock_statement')
+=item B<statement> (Statement attribute 'mock_statement')
 
 Gets/sets the SQL statement used.
 
-B<fields>  (Statement attribute 'mock_fields')
+=item B<fields>  (Statement attribute 'mock_fields')
 
 Gets/sets the fields to use for this statement.
 
-B<bound_params>  (Statement attribute 'mock_params')
+=item B<bound_params>  (Statement attribute 'mock_params')
 
 Gets/set the bound parameters to use for this statement.
 
-B<return_data>  (Statement attribute 'mock_records')
+=item B<return_data>  (Statement attribute 'mock_records')
 
-Gets/sets the data to return when asked (that is, when someone calls
-'fetch' on the statement handle).
+Gets/sets the data to return when asked (that is, when someone calls 'fetch' on the statement handle).
 
-B<current_record_num> (Statement attribute 'mock_current_record_num')
+=item B<current_record_num> (Statement attribute 'mock_current_record_num')
 
 Gets/sets the current record number.
 
-B<is_active()> (Statement attribute 'Active')
+=item B<is_active()> (Statement attribute 'Active')
 
-Returns true if the statement is a SELECT and has more records to
-fetch, false otherwise. (This is from the DBI, see the 'Active' docs
-under 'ATTRIBUTES COMMON TO ALL HANDLES'.)
+Returns true if the statement is a SELECT and has more records to fetch, false otherwise. (This is from the DBI, see the 'Active' docs under 'ATTRIBUTES COMMON TO ALL HANDLES'.)
 
-B<is_executed( $yes_or_no )> (Statement attribute 'mock_is_executed')
+=item B<is_executed( $yes_or_no )> (Statement attribute 'mock_is_executed')
 
 Sets the state of the tracker 'executed' flag.
 
-B<is_finished( $yes_or_no )> (Statement attribute 'mock_is_finished')
+=item B<is_finished( $yes_or_no )> (Statement attribute 'mock_is_finished')
 
-If set to 'yes' tells the tracker that the statement is finished. This
-resets the current record number to '0' and clears out the array ref
-of returned records.
+If set to 'yes' tells the tracker that the statement is finished. This resets the current record number to '0' and clears out the array ref of returned records.
 
-B<is_depleted()> (Statement attribute 'mock_is_depleted')
+=item B<is_depleted()> (Statement attribute 'mock_is_depleted')
 
-Returns true if the current record number is greater than the number
-of records set to return.
+Returns true if the current record number is greater than the number of records set to return.
 
-B<num_fields>
+=item B<num_fields>
 
 Returns the number of fields set in the 'fields' parameter.
 
-B<num_rows>
+=item B<num_rows>
 
 Returns the number of records in the current result set.
 
-B<num_params>
+=item B<num_params>
 
 Returns the number of parameters set in the 'bound_params' parameter.
 
-B<bound_param( $param_num, $value )>
+=item B<bound_param( $param_num, $value )>
 
-Sets bound parameter C<$param_num> to C<$value>. Returns the arrayref
-of currently-set bound parameters. This corresponds to the
-'bind_param' statement handle call.
+Sets bound parameter C<$param_num> to C<$value>. Returns the arrayref of currently-set bound parameters. This corresponds to the 'bind_param' statement handle call.
 
-B<bound_param_trailing( @params )>
+=item B<bound_param_trailing( @params )>
 
 Pushes C<@params> onto the list of already-set bound parameters.
 
-B<mark_executed()>
+=item B<mark_executed()>
 
-Tells the tracker that the statement has been executed and resets the
-current record number to '0'.
+Tells the tracker that the statement has been executed and resets the current record number to '0'.
 
-B<next_record()>
+=item B<next_record()>
 
-If the statement has been depleted (all records returned) returns
-undef; otherwise it gets the current recordfor returning, increments
-the current record number and returns the current record.
+If the statement has been depleted (all records returned) returns undef; otherwise it gets the current recordfor returning, increments the current record number and returns the current record.
 
-B<to_string()>
+=item B<to_string()>
 
-Tries to give an decent depiction of the object state for use in
-debugging.
+Tries to give an decent depiction of the object state for use in debugging.
+
+=back
 
 =head1 DBD::Mock::StatementTrack::Iterator
 
 This object can be used to iterate through the current set of C<DBD::Mock::StatementTrack> objects in the history by fetching the 'mock_all_history_iterator' attribute from a database handle. This object is very simple and is meant to be a convience to make writing long test script easier. Aside from the constructor (C<new>) this object has only one method.
 
+=over 4
+
 B<next>
 
 Calling C<next> will return the next C<DBD::Mock::StatementTrack> object in the history. If there are no more C<DBD::Mock::StatementTrack> objects available, then this method will return undef. 
+
+B<reset>
+
+This will reset the internal pointer to the begining of the statement history.
+
+=back
+
+=head1 DBD::Mock::Session 
+
+The DBD::Mock::Session object is an alternate means of specifying the SQL statements and result sets for DBD::Mock. The idea is that you can specify a complete 'session' of usage, which will be verified through DBD::Mock. Here is an example:
+
+  my $session = DBD::Mock::Session->new('my_session' => (
+        { 
+            statement => "SELECT foo FROM bar", # as a string
+            results   => [[ 'foo' ], [ 'baz' ]]
+        },
+        {
+            statement => qr/UPDATE bar SET foo \= \'bar\'/, # as a reg-exp
+            results   => [[]]
+        },
+        {
+            statement => sub {  # as a CODE ref
+                    my ($SQL, $state) = @_;
+                    return $SQL eq "SELECT foo FROM bar";
+                    },  
+            results   => [[ 'foo' ], [ 'bar' ]]
+        }
+  ));
+  
+As you can see, a session is essentially made up a list of HASH references we call 'states'. Each state has a 'statement' and a set of 'results'. If DBD::Mock finds a session in the 'mock_session' attribute, then it will pass the current C<$dbh> and SQL statement to that DBD::Mock::Session. The SQL statement will be checked against the 'statement'  field in the current state. If it passes, then the 'results' of the current state will get feed to DBD::Mock through the 'mock_add_resultset' attribute. We then advance to the next state in the session, and wait for the next call through DBD::Mock. If at any time the SQL statement does not match the current state's 'statement', an error will be raised (and propagated through the normal DBI error handling based on your values for RaiseError and PrintError). 
+
+As can also be seen in the example above, 'statement' fields can come in many forms. The simplest is a string, which will be compared using C<eq> against the currently running statement. The next is a reg-exp reference, this too will get compared against the currently running statement. The last option is a CODE ref, this is sort of a catch-all to allow for a wide range of SQL comparison approaches (including using modules like SQL::Statement or SQL::Parser for detailed functional comparisons). The first argument to the CODE ref will be the currently active SQL statement to compare against, the second argument is a reference to the current state HASH (in case you need to alter the results, or store extra information). The CODE is evaluated in boolean context and throws and exception if it is false. 
+
+=over 4
+
+B<new ($session_name, @session_states)>
+
+A C<$session_name> can be optionally be specified, along with at least one C<@session_states>. If you don't specify a C<$session_name>, then a default one will be created for you. The C<@session_states> must all be HASH references as well, if this conditions fail, an exception will be thrown.
+
+B<verify ($dbh, $SQL)>
+
+This will check the C<$SQL> against the current state's 'statement' value, and if it passes will add the current state's 'results' to the C<$dbh>. If for some reason the 'statement' value is bad, not of the prescribed type, an exception is thrown. See above for more details.
+
+=back
 
 =head1 EXPERIMENTAL FUNCTIONALITY
 
 All functionality listed here is highly experimental and should be used with great caution (if at all). 
 
-=over 
+=over 4
 
 =item Attribute Aliasing
 
@@ -1413,13 +1430,13 @@ I would also like to add the ability to bind a subroutine (or possibly an object
 
 I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Devel::Cover> report on this module test suite.
 
- ------------------------ ------ ------ ------ ------ ------ ------ ------
- File                       stmt branch   cond    sub    pod   time  total
- ------------------------ ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                89.1   82.0   86.5   93.3    0.0  100.0   87.2
- ------------------------ ------ ------ ------ ------ ------ ------ ------
- Total                      89.1   82.0   86.5   93.3    0.0  100.0   87.2
- ------------------------ ------ ------ ------ ------ ------ ------ ------
+ ---------------------------- ------ ------ ------ ------ ------ ------ ------
+ File                           stmt branch   cond    sub    pod   time  total
+ ---------------------------- ------ ------ ------ ------ ------ ------ ------
+ DBD/Mock.pm                    89.3   83.9   82.6   93.9    0.0  100.0   87.6
+ ---------------------------- ------ ------ ------ ------ ------ ------ ------
+ Total                          89.3   83.9   82.6   93.9    0.0  100.0   87.6
+ ---------------------------- ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO
 

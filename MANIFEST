@@ -7,6 +7,7 @@ VERSION
 lib/DBD/Mock.pm
 t/00_basic.t
 t/10_db_handle.t
+t/11_dr_handle.t
 t/12_db_can_connect.t
 t/13_misc_mock_attr.t
 t/14_db_parser.t
@@ -20,4 +21,5 @@ t/37_st_can_connect.t
 t/40_mock_statement_track.t
 t/45_mock_statement_track_iterator.t
 t/50_db_pool.t
+t/60_DBD_Mock_Session_test.t
 t/pod.t

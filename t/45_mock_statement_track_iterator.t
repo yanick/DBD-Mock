@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 16;
+use Test::More tests => 22;
 
 BEGIN {
     use_ok('DBD::Mock');
@@ -20,6 +20,15 @@ BEGIN {
     cmp_ok($i->next(), '==', 4, '... got 4');
     cmp_ok($i->next(), '==', 5, '... got 5');
     ok(!defined($i->next()), '... got undef');
+    
+    $i->reset();
+        
+    cmp_ok($i->next(), '==', 1, '... got 1');
+    cmp_ok($i->next(), '==', 2, '... got 2');
+    cmp_ok($i->next(), '==', 3, '... got 3');
+    cmp_ok($i->next(), '==', 4, '... got 4');
+    cmp_ok($i->next(), '==', 5, '... got 5');
+    ok(!defined($i->next()), '... got undef');    
 }
 
 # and now test it within context
