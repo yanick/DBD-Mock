@@ -1,52 +1,91 @@
-# -*-perl-*-
-
-# $Id: 10_db_handle.t,v 1.1 2004/01/21 13:06:05 cwinters Exp $
+#!/usr/bin/perl
 
 use strict;
-use Test::More tests => 9;
+use warnings;
 
-require DBI;
+use Test::More tests => 21;
 
-my $trace_log = 'tmp_dbi_trace.log';
-
-{
-    my $dbh = DBI->connect( 'DBI:Mock:', '', '' ) || die $DBI::errstr;
-    is( ref( $dbh ), 'DBI::db',
-        'DBI handle returned from connect()' );
+BEGIN {
+    use_ok('DBD::Mock');  
+    use_ok('DBI');  
 }
 
+# test misc. attributes
+
 {
+    my $dbh = DBI->connect('DBI:Mock:', '', '');
+    isa_ok($dbh, 'DBI::db'); 
+    
+    # DBI will handle attributes with 'private_', 'dbi_' or ,
+    # 'dbd_' prefixes but all others, we need to handle.
+    
+    $dbh->{mysql_insertid} = 10;
+    cmp_ok($dbh->{mysql_insertid}, '==', 10, '... this attribute should be 10');
+    
+    # DBI will handle these
+    
+    $dbh->{private_insert_id} = 15;
+    cmp_ok($dbh->{private_insert_id}, '==', 15, '... this attribute should be 15');    
+    
+    $dbh->{dbi_attribute} = 2000;
+    cmp_ok($dbh->{dbi_attribute}, '==', 2000, '... this attribute should be 2000');  
+    
+    $dbh->{dbd_attr} = 15_000;
+    cmp_ok($dbh->{dbd_attr}, '==', 15_000, '... this attribute should be 15,000');  
+    
+    $dbh->disconnect();     
+}   
+
+# test setting attributes post-connect
+
+{
+    my $trace_log = 'tmp_dbi_trace.log';
+    
+    my $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+    $dbh->{RaiseError} = 1;
+    $dbh->{PrintError} = 1;
+    $dbh->{AutoCommit} = 1;
+    $dbh->trace( 2, $trace_log );    
+    ok(-f $trace_log, '... the trace log file has been created');    
+    cmp_ok( $dbh->{RaiseError}, '==', 1,
+        'RaiseError DB attribute set after connect()' );
+    cmp_ok( $dbh->{PrintError}, '==', 1,
+        'PrintError DB attribute set after connect()' );
+    cmp_ok( $dbh->{AutoCommit}, '==', 1,
+        'AutoCommit DB attribute set after connect()' );
+    cmp_ok( $dbh->{TraceLevel}, '==', 2,
+        'TraceLevel DB attribute set after connect()' );
+ 
+     cmp_ok(unlink($trace_log), '==', 1, "... removing the trace log file" );
+     ok(!-e $trace_log, "... the trace log file is actually gone" );
+    
+    $dbh->disconnect();       
+}
+
+# test setting them during connect
+
+{
+    my $trace_log = 'tmp_dbi_trace.log';
+    
     open STDERR, "> $trace_log";
+    ok(-f $trace_log, '... the trace log file has been created');
     my $dbh = DBI->connect( 'DBI:Mock:', '', '',
                             { RaiseError => 1,
                               PrintError => 1,
                               AutoCommit => 1,
-                              TraceLevel => 2 } ) || die $DBI::errstr;
-    is( $dbh->{RaiseError}, 1,
+                              TraceLevel => 2 } );
+    cmp_ok( $dbh->{RaiseError}, '==', 1,
         'RaiseError DB attribute set in connect()' );
-    is( $dbh->{PrintError}, 1,
+    cmp_ok( $dbh->{PrintError}, '==', 1,
         'PrintError DB attribute set in connect()' );
-    is( $dbh->{AutoCommit}, 1,
+    cmp_ok( $dbh->{AutoCommit}, '==', 1,
         'AutoCommit DB attribute set in connect()' );
-    is( $dbh->{TraceLevel}, 2,
-        'TraceLevel DB attribute set in connect()' );
+    cmp_ok( $dbh->{TraceLevel}, '==', 2,
+        'TraceLevel DB attribute set in connect()' );       
+        
     close STDERR;
-    unlink( $trace_log ) if ( -f $trace_log );
-}
+    cmp_ok(unlink($trace_log), '==', 1, "... removing the trace log file" );
+    ok(!-e $trace_log, "... the trace log file is actually gone" );
 
-{
-    my $dbh = DBI->connect( 'DBI:Mock:', '', '' ) || die $DBI::errstr;
-    $dbh->{RaiseError} = 1;
-    $dbh->{PrintError} = 1;
-    $dbh->{AutoCommit} = 1;
-    $dbh->trace( 2, $trace_log );
-    is( $dbh->{RaiseError}, 1,
-        'RaiseError DB attribute set after connect()' );
-    is( $dbh->{PrintError}, 1,
-        'PrintError DB attribute set after connect()' );
-    is( $dbh->{AutoCommit}, 1,
-        'AutoCommit DB attribute set after connect()' );
-    is( $dbh->{TraceLevel}, 2,
-        'TraceLevel DB attribute set after connect()' );
-    unlink( $trace_log ) if ( -f $trace_log );
+    $dbh->disconnect();   
 }

@@ -1,5 +1,18 @@
 Revision history for Perl extension DBD::Mock.
 
+0.12 Thurs Sept 2 2004
+** First version maintained by Stevan Little <stevan@iinteractive.com> **
+    - built up the test suite to 89.7% coverage
+    - removed the undocumented 'mock_auto_commit' since it really
+      was not very useful at this point.
+    - added the DBD::Mock::Pool functionality
+        - added tests for this
+        - added documentation for this
+    - added pod.t to test suite
+    - removed AUTOLOAD in DBD::Mock::StatementTrack and replaced it with
+      hand coded methods (sorry I really dislike AUTOLOAD)
+    - centralized error handling in DBD::Mock::_error_handler
+
 0.11  Fri Jul 23 10:35:13 EDT 2004
 
       - Fix CPAN Bug #7057: add a no-op 'disconnect_all()' to

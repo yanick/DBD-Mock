@@ -26,9 +26,9 @@ This module requires these other modules and libraries:
 COPYRIGHT AND LICENCE
 
 Copyright (C) 2004 Chris Winters <chris@cwinters.com>
+Copyright (C) 2004 Stevan Little <stevan@iinteractive.com>
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself. 
 
 ========================================
-$Id: README,v 1.3 2004/03/08 04:40:27 cwinters Exp $

@@ -1,49 +1,139 @@
-# -*-perl-*-
-
-# $Id: 14_db_parser.t,v 1.1 2004/07/23 14:23:58 cwinters Exp $
+#!/usr/bin/perl
 
 use strict;
-use Test::More tests => 3;
+use warnings;
 
-require DBI;
+use Test::More tests => 29;
+
+BEGIN {
+    use_ok('DBD::Mock');  
+	use_ok('DBI');
+}
 
 {
-    my $dbh = DBI->connect( 'DBI:Mock:', '', '', { RaiseError => 1, PrintError => 0 } )
-        || die DBI->errstr;
-    eval { $dbh->{mock_add_parser} = \&parse_select };
-    ok( ! $@, "Added parser to db handle" );
-    my $st1 = eval { $dbh->prepare( 'SELECT myfield FROM mytable' ) };
-    diag( $@ ) if ( $@ );
-    ok( ! $@, 'Prepared proper SELECT statement' );
-
-    my $good_error = qq{Failed to parse statement. Error: incorrect use of '*'. } .
-                     qq{Statement: SELECT * FROM mytable\n};
+    my $dbh = DBI->connect('DBI:Mock:', '', '', { RaiseError => 1, PrintError => 0 });
+    isa_ok($dbh, "DBI::db");
+    # check to be sure this is set, otherwise 
+    # the test wont be set up right
+    cmp_ok($dbh->{RaiseError}, '==', 1, '... make sure RaiseError is set correctly');
+    
+    # check parse sub-refs
+    
+    my $parser = sub {
+        my ($sql) = @_;
+        die "incorrect use of '*'\n" if $sql =~ /^SELECT \*/;
+    };
+    
+    eval { 
+        $dbh->{mock_add_parser} = $parser; 
+    };
+    ok(!$@, '... parser successfully added to dbh');
+    
+    is($dbh->{mock_parser}->[0], $parser, '... the same parser is stored');
+    
+    my $sth1 = eval { $dbh->prepare('SELECT myfield FROM mytable') };
+    isa_ok($sth1, "DBI::st");
+                        
     my $sth2 = eval { $dbh->prepare( 'SELECT * FROM mytable' ) };
-    is( $@, $good_error,
-        'Parser failure generates correct error' );
+    ok(!defined($sth2), '... we should get nothing back from here');
+    
+    is($@, 
+        qq(Failed to parse statement. Error: incorrect use of '*'. Statement: SELECT * FROM mytable\n), 
+        '... parser failure generated correct error');
+        
+    $dbh->disconnect();
 }
 
-sub parse_select {
-    my ( $sql ) = @_;
-    return unless ( $sql =~ /^\s*select/i );
-    if ( $sql =~ /^\s*select\s+\*/i ) { 
-        die "incorrect use of '*'\n";
+# parser class
+{
+    package MyParser;
+    
+    sub new { return bless {} }
+    sub parse { 
+        my ($self, $sql) = @_;
+        die "incorrect use of '*'\n" if $sql =~ /^SELECT \*/;        
     }
 }
 
-sub parse_insert {
-    my ( $sql ) = @_;
-    return unless ( $sql =~ /^\s*insert/i );
-    unless ( $sql =~ /^\s*insert\s+into\s+mytable/i ) { 
-        die "incorrect table name\n";
+{
+    my $dbh = DBI->connect('DBI:Mock:', '', '', { PrintError => 1 });
+    isa_ok($dbh, "DBI::db");
+    # check to be sure this is set, otherwise 
+    # the test wont be set up right
+    cmp_ok($dbh->{PrintError}, '==', 1, '... make sure PrintError is set correctly'); 
+    
+    # check parse objects
+    
+    my $parser = MyParser->new();
+    
+    eval { 
+        $dbh->{mock_add_parser} = $parser; 
+    };
+    ok(!$@, '... parser successfully added to dbh');
+    
+    is($dbh->{mock_parser}->[0], $parser, '... the same parser is stored');
+    
+    my $sth1 = eval { $dbh->prepare('SELECT myfield FROM mytable') };
+    isa_ok($sth1, "DBI::st");
+     
+    { # isolate the warn handler 
+        $SIG{__WARN__} = sub {
+            my $msg = shift;
+            like($msg, 
+                 qr/incorrect use of \'\*\'\. Statement\: SELECT \* FROM mytable/,  #'
+                 '...got the expected warning');
+        };                        
+                                                              
+        my $sth2 = eval { $dbh->prepare( 'SELECT * FROM mytable' ) };
+        ok(!defined($sth2), '... we should get nothing back from here');
     }
+    
+    $dbh->disconnect();    
 }
 
-sub parse_update {
-    my ( $sql ) = @_;
-    return unless ( $sql =~ /^\s*update/i );
-    unless ( $sql =~ /^\s*update\s+mytable/ ) { 
-        die "incorrect table name\n";
-    }
+
+{ # pass in a bad parser
+    my $dbh = DBI->connect('DBI:Mock:', '', '', { RaiseError => 1, PrintError => 0 });
+    isa_ok($dbh, "DBI::db");
+    # check to be sure this is set, otherwise 
+    # the test wont be set up right
+    cmp_ok($dbh->{RaiseError}, '==', 1, '... make sure RaiseError is set correctly');
+    
+    eval { 
+        $dbh->{mock_add_parser} = "Fail"; 
+    };
+    like($@, qr/Parser must be a code reference or /, '... bad parser successfully not added to dbh');
+    
+    eval { 
+        $dbh->{mock_add_parser} = []; 
+    };
+    like($@, qr/Parser must be a code reference or /, '... bad parser successfully not added to dbh');
+
 }
 
+{
+    # check it with PrintError too
+ 
+    my $dbh = DBI->connect('DBI:Mock:', '', '');
+    isa_ok($dbh, "DBI::db");
+    # check to be sure this is set, otherwise 
+    # the test wont be set up right
+    cmp_ok($dbh->{PrintError}, '==', 1, '... make sure PrintError is set correctly');
+    
+    { # isolate the warn handler 
+        $SIG{__WARN__} = sub {
+            my $msg = shift;
+            like($msg, 
+                 qr/Parser must be a code reference or /, 
+                 '... bad parser successfully not added to dbh');
+        };                        
+
+        ok(!defined($dbh->{mock_add_parser} = {}), '... this returns undef too'); 
+
+        my $test = "Fail";
+        
+        ok(!defined($dbh->{mock_add_parser} = \$test), '... this returns undef too'); 
+
+    }    
+    
+}

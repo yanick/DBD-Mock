@@ -1,28 +1,34 @@
+
 package DBD::Mock;
 
-# $Id: Mock.pm,v 1.15 2004/07/23 15:28:48 cwinters Exp $
+sub import {
+    shift;
+    $DBI::connect_via = "DBD::Mock::Pool::connect" if (@_ && lc($_[0]) eq "pool");
+}
 
-#   Copyright (c) 2004 Chris Winters (spawned from original code
-#   Copyright (c) 1994 Tim Bunce)
-#
+# --------------------------------------------------------------------------- #
+#   Copyright (c) 2004 Stevan Little, Chris Winters 
+#   (spawned from original code Copyright (c) 1994 Tim Bunce)
+# --------------------------------------------------------------------------- #
 #   You may distribute under the terms of either the GNU General Public
 #   License or the Artistic License, as specified in the Perl README file.
+# --------------------------------------------------------------------------- #
 
 use strict;
-use vars qw( $drh $err $errstr );
+use warnings;
+
 require DBI;
 
-$DBD::Mock::VERSION = sprintf( "%d.%02d", q$Revision: 1.15 $ =~ /(\d+)\.(\d+)/o );
+our $VERSION = '0.12';
 
-$drh    = undef;    # will hold driver handle
-$err    = 0;		# will hold any error codes
-$errstr = '';       # will hold any error messages
+our $drh    = undef;    # will hold driver handle
+our $err    = 0;		# will hold any error codes
+our $errstr = '';       # will hold any error messages
 
 sub driver {
-    return $drh if ( $drh );
-    my ( $class, $attr ) = @_;
-    $class .= "::dr";
-    $drh = DBI::_new_drh( $class, {
+    return $drh if defined $drh;
+    my ($class, $attributes) = @_;
+    $drh = DBI::_new_drh( "${class}::dr", {
         Name        => 'Mock',
         Version     => $DBD::Mock::VERSION,
         Attribution => 'DBD Mock driver by Chris Winters (orig. from Tim Bunce)',
@@ -32,10 +38,18 @@ sub driver {
     return $drh;
 }
 
-sub CLONE {
-    undef $drh;
-}
+sub CLONE { undef $drh }
 
+sub DBD::Mock::_error_handler {
+    my ($dbh, $error) = @_;
+    $dbh->DBI::set_err(1, $error);
+    if ($dbh->{'PrintError'}) {
+        warn "$error\n";
+    }
+    elsif ($dbh->{'RaiseError'}) {
+        die "$error\n";
+    }
+}
 
 ########################################
 # DRIVER
@@ -43,42 +57,39 @@ sub CLONE {
 package DBD::Mock::dr;
 
 use strict;
+use warnings;
 
-use vars qw( $imp_data_size );
-$imp_data_size = 0;
+$DBD::Mock::dr::imp_data_size = 0;
 
 sub connect {
-    my ( $drh, $dbname, $user, $auth, $attr ) = @_;
-    $attr ||= {};
-    my $dbh = DBI::_new_dbh( $drh, {
+    my ($drh, $dbname, $user, $auth, $attributes) = @_;
+    $attributes ||= {};
+    my $dbh = DBI::_new_dbh($drh, {
         Name                   => $dbname,
-
         # holds statement parsing coderefs/objects
         mock_parser            => [],
-
         # holds all statements applied to handle until manually cleared
         mock_statement_history => [],
-
         # ability to fake a failed DB connection
         mock_can_connect       => 1,
-
         # rest of attributes
-        %{ $attr },
-    }) or return undef;
+        %{ $attributes },
+    }) || return undef;
     return $dbh;
 }
 
+sub data_sources {
+	return ("DBI:Mock:");
+}
 
 # Necessary to support DBI < 1.34
 # from CPAN RT bug #7057
 
 sub disconnect_all {
     # no-op
-}
+}  
 
-sub DESTROY {
-    undef;
-}
+sub DESTROY { undef }
 
 ########################################
 # DATABASE
@@ -86,9 +97,9 @@ sub DESTROY {
 package DBD::Mock::db;
 
 use strict;
+use warnings;
 
-use vars qw( $imp_data_size );
-$imp_data_size = 0;
+$DBD::Mock::db::imp_data_size = 0;
 
 sub ping {
  	my ( $dbh ) = @_;
@@ -96,90 +107,73 @@ sub ping {
 }
 
 sub prepare {
-    my( $dbh, $statement ) = @_;
+    my($dbh, $statement) = @_;
 
     eval {
         foreach my $parser ( @{ $dbh->{mock_parser} } ) {
-            if ( ref $parser eq 'CODE' ) {
-                $parser->( $statement );
+            if (ref($parser) eq 'CODE') {
+                $parser->($statement);
             }
             else {
-                $parser->parse( $statement );
+                $parser->parse($statement);
             }
         }
     };
-    if ( $@ ) {
+    if ($@) {
         my $parser_error = $@;
         chomp $parser_error;
-        my $error = "Failed to parse statement. Error: $parser_error. " .
-                    "Statement: $statement";
-        $dbh->DBI::set_err( 1, $error );
-        $error .= "\n";
-        if ( $dbh->FETCH( 'PrintError' ) ) {
-            warn $error;
-            return undef;
-        }
-        elsif ( $dbh->FETCH( 'RaiseError' ) ) {
-            die $error;
-        }
+        DBD::Mock::_error_handler($dbh, "Failed to parse statement. Error: ${parser_error}. Statement: ${statement}");
+        return undef;
     }
-
-    my $sth = DBI::_new_sth( $dbh, { Statement => $statement });
-    $sth->trace_msg( "Preparing statement '$statement'\n", 1 );
-    my %track_params = (
-        statement => $statement,
-    );
+    
+    my $sth = DBI::_new_sth($dbh, { Statement => $statement });
+    
+    $sth->trace_msg("Preparing statement '${statement}'\n", 1);
+    
+    my %track_params = (statement => $statement);
 
     # If we have available resultsets seed the tracker with one
 
-    my ( $rs );
+    my $rs;
     if ( my $all_rs = $dbh->{mock_rs} ) {
-        if ( my $by_name = $all_rs->{named}{ $statement } ) {
+        if ( my $by_name = $all_rs->{named}{$statement} ) {
             $rs = $by_name;
         }
         else {
-            $rs = shift @{ $all_rs->{ordered} };
+            $rs = shift @{$all_rs->{ordered}};
         }
     }
-    if ( ref $rs eq 'ARRAY' and scalar @{ $rs } > 0 ) {
+    
+    if (ref($rs) eq 'ARRAY' && scalar(@{$rs}) > 0 ) {
         my $fields = shift @{ $rs };
         $track_params{return_data} = $rs;
         $track_params{fields}      = $fields;
-        $sth->STORE( NAME          => $fields );
-        $sth->STORE( NUM_OF_FIELDS => scalar @{ $fields } );
+        $sth->STORE(NAME           => $fields);
+        $sth->STORE(NUM_OF_FIELDS  => scalar @{ $fields });
     }
     else {
-        $sth->trace_msg( 'No return data set in DBH', 1 );
+        $sth->trace_msg('No return data set in DBH', 1);
     }
 
  	# do not allow a statement handle to be created if there is no
  	# connection present.
 
- 	unless ( $dbh->FETCH( 'Active' ) ) {
-        my $error = "No connection present";
- 		$dbh->DBI::set_err( 1, $error );
-        $error .= "\n";
- 		if ( $dbh->FETCH( 'PrintError' ) ) {
- 			warn $error;
-            return undef;
- 		}
- 		if ( $dbh->FETCH( 'RaiseError' ) ) {
- 			die $error;
- 		}
- 	}
+    unless ($dbh->FETCH('Active')) {
+        DBD::Mock::_error_handler($dbh, "No connection present");
+        return undef;
+    }
 
     # This history object will track everything done to the statement
 
-    my $history = DBD::Mock::StatementTrack->new( %track_params );
-
-    $sth->STORE( mock_my_history => $history );
+    my $history = DBD::Mock::StatementTrack->new(%track_params);
+    $sth->STORE(mock_my_history => $history);
 
     # ...now associate the history object with the database handle so
     # people can browse the entire history at once, even for
     # statements opened and closed in a black box
 
-    my $all_history = $dbh->FETCH( 'mock_statement_history' );
-    push @{ $all_history }, $history;
+    my $all_history = $dbh->FETCH('mock_statement_history');
+    push @{$all_history}, $history;
 
     return $sth;
 }
@@ -187,28 +181,33 @@ sub prepare {
 sub FETCH {
     my ( $dbh, $attrib ) = @_;
     $dbh->trace_msg( "Fetching DB attrib '$attrib'\n" );
-    if ( $attrib eq 'AutoCommit' ) {
-        return $dbh->{mock_auto_commit};
+    if ($attrib eq 'AutoCommit') {
+        return $dbh->{AutoCommit};
     }
- 	elsif ( $attrib eq 'Active' ) {
+ 	elsif ($attrib eq 'Active') {
         return $dbh->{mock_can_connect};
     }
-    elsif ( $attrib eq 'mock_all_history' ) {
+    elsif ($attrib eq 'mock_all_history') {
         return $dbh->{mock_statement_history};
     }
-    elsif ( $attrib =~ /^mock/ ) {
+    elsif ($attrib =~ /^mock/) {
         return $dbh->{ $attrib };
     }
+    elsif ($attrib =~ /^(private_|dbi_|dbd_|[A-Z])/ ) {
+        $dbh->trace_msg("... fetching non-driver attribute ($attrib) that DBI handles\n");    
+        return $dbh->SUPER::FETCH($attrib);
+    }      
     else {
-        return $dbh->SUPER::FETCH( $attrib );
+        $dbh->trace_msg( "... fetching non-driver attribute ($attrib) that DBI doesn't handle\n");
+        return $dbh->{ $attrib };
     }
 }
 
 sub STORE {
-    my ( $dbh, $attrib, $value ) = @_;
-    $dbh->trace_msg( "Storing DB attribute '$attrib'\n" );
-    if ( $attrib eq 'AutoCommit' ) {
-        $dbh->{mock_auto_commit} = $value;
+    my ( $dbh, $attrib, $value ) = @_;   
+    $dbh->trace_msg( "Storing DB attribute '$attrib' with '$value'\n" );
+    if ($attrib eq 'AutoCommit') {
+        $dbh->{AutoCommit} = $value;
         return $value;
     }
     elsif ( $attrib eq 'mock_clear_history' ) {
@@ -218,48 +217,41 @@ sub STORE {
         return [];
     }
     elsif ( $attrib eq 'mock_add_parser' ) {
-        my $parser_type = ref $value;
-        my ( $is_valid_parser );
+        my $parser_type = ref($value);
+        my $is_valid_parser;
 
-        if ( $parser_type eq 'CODE' ) {
+        if ($parser_type eq 'CODE') {
             $is_valid_parser++;
         }
-        elsif ( $parser_type and $parser_type !~ /^(ARRAY|HASH|SCALAR)$/ ) {
+        elsif ($parser_type && $parser_type !~ /^(ARRAY|HASH|SCALAR)$/) {
             $is_valid_parser = eval { $parser_type->can( 'parse' ) };
         }
 
-        unless ( $is_valid_parser ) {
+        unless ($is_valid_parser) {
             my $error = "Parser must be a code reference or object with 'parse()' " .
                         "method (Given type: '$parser_type')";
-            $dbh->DBI::set_err( 1, $error );
-            $error .= "\n";
-            if ( $dbh->FETCH( 'PrintError' ) ) {
-                warn $error;
-                return undef
-            }
-            if ( $dbh->FETCH( 'RaiseError' ) ) {
-                die $error;
-            }
+            DBD::Mock::_error_handler($dbh, $error);
+            return undef;
         }
-        push @{ $dbh->{mock_parser} }, $value;
+        push @{$dbh->{mock_parser}}, $value;
         return $value;
     }
     elsif ( $attrib eq 'mock_add_resultset' ) {
         $dbh->{mock_rs} ||= { named   => {},
                               ordered => [] };
         if ( ref $value eq 'ARRAY' ) {
-            my @copied_values = @{ $value };
-            push @{ $dbh->{mock_rs}{ordered} }, \@copied_values;
+            my @copied_values = @{$value};
+            push @{$dbh->{mock_rs}{ordered}}, \@copied_values;
             return \@copied_values;
         }
         elsif ( ref $value eq 'HASH' ) {
             my $name = $value->{sql};
-            unless ( $name ) {
+            unless ($name) {
                 die "Indexing resultset by name requires passing in 'sql' ",
                     "as hashref key to 'mock_add_resultset'.\n";
             }
-            my @copied_values = @{ $value->{results} };
-            $dbh->{mock_rs}{named}{ $name } = \@copied_values;
+            my @copied_values = @{$value->{results}};
+            $dbh->{mock_rs}{named}{$name} = \@copied_values;
             return \@copied_values;
         }
         else {
@@ -267,12 +259,17 @@ sub STORE {
                 "resultset via 'mock_add_resultset'.\n";
         }
     }
-    elsif ( $attrib =~ /^mock/ ) {
-        return $dbh->{ $attrib } = $value;
+    elsif ($attrib =~ /^mock/) {  
+        return $dbh->{$attrib} = $value;
     }
-    else {
-        return $dbh->SUPER::STORE( $attrib, $value );
-    }
+    elsif ($attrib =~ /^(private_|dbi_|dbd_|[A-Z])/ ) {
+        $dbh->trace_msg("... storing non-driver attribute ($attrib) with value ($value) that DBI handles\n");    
+        return $dbh->SUPER::STORE($attrib, $value);
+    }    
+  else {
+      $dbh->trace_msg("... storing non-driver attribute ($attrib) with value ($value) that DBI wont handle\n");    
+      return $dbh->{$attrib} = $value;
+  }
 }
 
 sub DESTROY {
@@ -285,9 +282,9 @@ sub DESTROY {
 package DBD::Mock::st;
 
 use strict;
+use warnings;
 
-use vars qw( $imp_data_size );
-$imp_data_size = 0;
+$DBD::Mock::st::imp_data_size = 0;
 
 sub bind_param {
     my ( $sth, $param_num, $val, $attr ) = @_;
@@ -299,17 +296,9 @@ sub bind_param {
 sub execute {
     my ( $sth, @params ) = @_;
 
-    unless ( $sth->{Database}{mock_can_connect} ) {
-        my $error = "No connection present";
- 		$sth->DBI::set_err( 1, $error );
-        $error .= "\n";
- 		if ( $sth->FETCH( 'PrintError' ) ) {
- 			warn $error;
-            return 0;
- 		}
- 		if ( $sth->FETCH( 'RaiseError' ) ) {
- 			die $error;
- 		}
+    unless ($sth->{Database}->{mock_can_connect}) {
+        DBD::Mock::_error_handler($sth->{Database}, "No connection present");
+        return 0;
     }
 
     my $tracker = $sth->FETCH( 'mock_my_history' );
@@ -325,17 +314,9 @@ sub execute {
 sub fetch {
     my( $sth ) = @_;
 
-    unless ( $sth->{Database}->{mock_can_connect} ) {
-        my $error = "No connection present";
- 		$sth->DBI::set_err( 1, $error );
-        $error .= "\n";
- 		if ( $sth->FETCH( 'PrintError' ) ) {
- 			warn $error;
-            return undef;
- 		}
- 		if ( $sth->FETCH( 'RaiseError' ) ) {
- 			die $error;
- 		}
+    unless ($sth->{Database}->{mock_can_connect}) {
+        DBD::Mock::_error_handler($sth->{Database}, "No connection present");
+        return undef;
     }
 
     my $tracker = $sth->FETCH( 'mock_my_history' );
@@ -384,7 +365,7 @@ sub FETCH {
         return $tracker->bound_params;
     }
     elsif ( $attrib eq 'mock_num_records' ) {
-        return scalar @{ $tracker->return_data };
+        return scalar @{$tracker->return_data};
     }
     elsif ( $attrib eq 'mock_current_record_num' ) {
         return $tracker->current_record_num;
@@ -407,25 +388,50 @@ sub FETCH {
 }
 
 sub STORE {
-    my ( $sth, $attrib, $value ) = @_;
+    my ($sth, $attrib, $value) = @_;
     $sth->trace_msg( "Storing ST attribute '$attrib'\n" );
-    if ( $attrib =~ /^mock/ ) {
-        return $sth->{ $attrib } = $value;
+    if ($attrib =~ /^mock/) {
+        return $sth->{$attrib} = $value;
     }
-    elsif ( $attrib eq 'NAME' ) {
+    elsif ($attrib eq 'NAME') {
         # no-op...
         return;
     }
-    else {
+    else {   
         $value ||= 0;
-        return $sth->DBD::_::st::STORE( $attrib, $value );
+        return $sth->SUPER::STORE( $attrib, $value );
     }
 }
 
-sub DESTROY {
-    undef
+sub DESTROY { undef }
+
+##########################
+# Database Pooling 
+# (Apache::DBI emulation)
+
+package DBD::Mock::Pool;
+
+use strict;
+use warnings;
+
+my $connection;
+
+sub connect {
+	my $class = "DBD::Mock::Pool";
+	$class = shift unless ref($_[0]);
+	my ($driver_handle, $username, $password, $attributes) = @_;
+    $connection = bless $driver_handle->connect(), "DBD::Mock::Pool::db" unless $connection;
+	return $connection;
 }
 
+package DBD::Mock::Pool::db;
+
+use strict;
+use warnings;
+
+our @ISA = qw(DBI::db);
+
+sub disconnect { 1 }
 
 ########################################
 # TRACKER
@@ -433,65 +439,71 @@ sub DESTROY {
 package DBD::Mock::StatementTrack;
 
 use strict;
-
-$DBD::Mock::StatementTrack::AUTOLOAD = '';
-
-my %BOOLEAN_FIELDS = map { $_ => 1 } qw( is_executed );
-my %SINGLE_FIELDS  = map { $_ => 1 } qw( statement current_record_num );
-my %MULTI_FIELDS   = map { $_ => 1 } qw( return_data fields bound_params );
+use warnings;
 
 sub new {
-    my ( $class, %params ) = @_;
-    $params{return_data}      ||= [];
-    $params{fields}           ||= [];
-    $params{bound_params}     ||= [];
-    $params{is_executed}      ||= 'no';
-    $params{is_finished}      ||= 'no';
+    my ($class, %params) = @_;
+    # these params have default values
+    # but can be overridden
+    $params{return_data}  ||= [];
+    $params{fields}       ||= [];
+    $params{bound_params} ||= [];
+    $params{statement}    ||= "";    
+    # these params should never be overridden
+    # and should always start out in a default
+    # state to assure the sanity of this class    
+    $params{is_executed}        = 'no';
+    $params{is_finished}        = 'no';
     $params{current_record_num} = 0;
-    my $self = bless( \%params, $class );
+    # NOTE:
+    # changed from \%params here because that 
+    # would bind the hash sent in so that it 
+    # would reflect alterations in the object
+    # this violates encapsulation
+    my $self = bless { %params }, $class;
     return $self;
 }
 
 sub num_fields {
-    my ( $self ) = @_;
-    return scalar @{ $self->{fields} };
+    my ($self) = @_;
+    return scalar @{$self->{fields}};
 }
 
 sub num_params {
-    my ( $self ) = @_;
-    return scalar @{ $self->{bound_params} };
+    my ($self) = @_;
+    return scalar @{$self->{bound_params}};
 }
 
 sub bound_param {
-    my ( $self, $param_num, $value ) = @_;
-    $self->{bound_params}->[ $param_num - 1 ] = $value;
+    my ($self, $param_num, $value) = @_;
+    $self->{bound_params}->[$param_num - 1] = $value;
     return $self->bound_params;
 }
 
 sub bound_param_trailing {
-    my ( $self, @values ) = @_;
-    push @{ $self->{bound_params} }, @values;
+    my ($self, @values) = @_;
+    push @{$self->{bound_params}}, @values;
 }
 
 # Rely on the DBI's notion of Active: a statement is active if it's
 # currently in a SELECT and has more records to fetch
 
 sub is_active {
-    my ( $self, $value ) = @_;
-    return 0 unless ( $self->statement =~ /^\s*select/ism );
-    return 0 unless ( $self->is_executed );
-    return 0 if ( $self->is_depleted );
+    my ($self) = @_;
+    return 0 unless $self->statement =~ /^\s*select/ism;
+    return 0 unless $self->is_executed eq 'yes';
+    return 0 if     $self->is_depleted;
     return 1;
 }
 
 sub is_finished {
-    my ( $self, $value ) = @_;
-    if ( defined $value and $value eq 'yes' ) {
-        $self->{is_finished}        = 'yes';
-        $self->{current_record_num} = 0;
-        $self->{return_data}        = [];
+    my ($self, $value) = @_;
+    if (defined $value && $value eq 'yes' ) {
+        $self->{is_finished} = 'yes';
+        $self->current_record_num(0);
+        $self->{return_data} = [];
     }
-    elsif ( defined $value ) {
+    elsif (defined $value) {
         $self->{is_finished} = 'no';
     }
     return $self->{is_finished};
@@ -501,86 +513,80 @@ sub is_finished {
 # RETURN VALUES
 
 sub mark_executed {
-    my ( $self ) = @_;
-    $self->is_executed( 'yes' );
+    my ($self) = @_;
+    $self->is_executed('yes');
     $self->current_record_num(0);
 }
 
 sub next_record {
-    my ( $self ) = @_;
-    return undef if ( $self->is_depleted );
+    my ($self) = @_;
+    return undef if $self->is_depleted;
     my $rec_num = $self->current_record_num;
-    my $rec = $self->return_data->[ $rec_num ];
-    $self->current_record_num( $rec_num + 1 );
+    my $rec = $self->return_data->[$rec_num];
+    $self->current_record_num($rec_num + 1);
     return $rec;
 }
 
 sub is_depleted {
-    my ( $self ) = @_;
-    return ( $self->current_record_num >= scalar @{ $self->return_data } );
+    my ($self) = @_;
+    return ($self->current_record_num >= scalar @{$self->return_data});
 }
 
 # DEBUGGING AID
 
 sub to_string {
-    my ( $self ) = @_;
-    my $num_records = scalar @{ $self->return_data };
-    return join ( "\n",
+    my ($self) = @_;
+    return join "\n" => (
                   $self->{statement},
                   "Values: [" . join( '] [', @{ $self->{bound_params} } ) . "]",
-                  "Records: on $self->{current_record_num} of $num_records\n",
-                  "Executed? $self->{is_executed}; Finished? $self->{is_finished}" );
+                  "Records: on $self->{current_record_num} of " . scalar(@{$self->return_data}) . "\n",
+                  "Executed? $self->{is_executed}; Finished? $self->{is_finished}" 
+                  );
 }
 
-# PROPERTIES (since we don't want the usual suspect Class::Accessor as
-# dependency)
+# PROPERTIES 
 
-sub AUTOLOAD {
-    my ( $self, @params ) = @_;
-    my $request = $DBD::Mock::StatementTrack::AUTOLOAD;
-    $request =~ s/.*://;
-    my $class = ref $self;
-    unless ( $class ) {
-        die "Cannot fill method '$request' as a class method ",
-            "in '", __PACKAGE__, "'\n";
-    }
-    no strict 'refs';
-    if ( $BOOLEAN_FIELDS{ $request } ) {
-        *{ $class . '::' . $request } = sub {
-            my ( $self, $yes_no ) = @_;
-            if ( defined $yes_no ) {
-                $self->{ $request } = $yes_no;
-            }
-            return ( $self->{ $request } eq 'yes' ) ? 'yes' : 'no';
-        }
-    }
-    elsif ( $SINGLE_FIELDS{ $request } ) {
-        *{ $class . '::' . $request } = sub {
-            my ( $self, $value ) = @_;
-            if ( defined $value ) {
-                $self->{ $request } = $value;
-            }
-            return $self->{ $request };
-        }
-    }
-    elsif ( $MULTI_FIELDS{ $request } ) {
-        *{ $class . '::' . $request } = sub {
-            my ( $self, @values ) = @_;
-            if ( scalar @values ) {
-                push @{ $self->{ $request } }, @values;
-            }
-            return $self->{ $request };
-        }
-    }
-    else {
-        die "Don't know how to handle '$request' in ", __PACKAGE__, "; ",
-            "called from [", join( ', ', caller ), "]\n";
-    }
-    return $self->$request( @params );
+# boolean
+
+sub is_executed {
+    my ($self, $yes_no) = @_;
+    $self->{is_executed} = $yes_no if defined $yes_no;
+    return ($self->{is_executed} eq 'yes') ? 'yes' : 'no';
 }
 
-# Otherwise AUTOLOAD will try to handle it...
-sub DESTROY { return }
+# single-element fields
+
+sub statement {
+    my ($self, $value) = @_;
+    $self->{statement} = $value if defined $value;
+    return $self->{statement};
+}
+
+sub current_record_num {
+    my ($self, $value) = @_;
+    $self->{current_record_num} = $value if defined $value;
+    return $self->{current_record_num};
+}
+
+# multi-element fields
+
+sub return_data {
+    my ($self, @values) = @_;
+    push @{$self->{return_data}}, @values if scalar @values;
+    return $self->{return_data};
+}
+
+sub fields {
+    my ($self, @values) = @_;
+    push @{$self->{fields}}, @values if scalar @values;
+    return $self->{fields};
+}
+
+sub bound_params {
+    my ($self, @values) = @_;
+    push @{$self->{bound_params}}, @values if scalar @values;
+    return $self->{bound_params};
+}
 
 1;
 
@@ -1066,7 +1072,21 @@ actions performed by this statement handle. Most of the actions are
 separately available from the properties listed above, so you should
 never need this.
 
-=head1 THE DBD::Mock::StatementTrack OBJECT
+=head1 DBD::Mock::Pool
+
+This module can be used to emulate Apache::DBI style DBI connection 
+pooling. Just as with Apache::DBI, you must enable DBD::Mock::Pool 
+before loading DBI.
+
+ use DBD::Mock qw(Pool);
+ # followed by ...
+ use DBI;
+
+While this may not seem to make a lot of sense in a single-process testing 
+scenario, it can be useful when testing code which assumes a multi-process
+Apache::DBI pooled environment.
+
+=head1 DBD::Mock::StatementTrack
 
 Under the hood this module does most of the work with a
 C<DBD::Mock::StatementTrack> object. This is most useful when you are
@@ -1092,16 +1112,6 @@ B<fields>: Arrayref of field names
 =item *
 
 B<bound_params>: Arrayref of bound parameters
-
-=item *
-
-B<is_executed>: Boolean (as 'yes' or 'no') indicating whether the
-statement has been executed.
-
-=item *
-
-B<is_finished>: Boolean (as 'yes' or 'no') indicating whether the
-statement has been finished.
 
 =back
 
@@ -1181,6 +1191,44 @@ B<to_string()>
 Tries to give an decent depiction of the object state for use in
 debugging.
 
+=head1 BUGS
+
+=over
+
+=item Odd $dbh attribute behavior
+
+When writing the test suite I encountered some odd behavior with some C<$dbh> attributes. I still need to get deeper into how DBD's work to understand what it is that is actually doing wrong.
+
+=back
+
+=head1 TO DO
+
+=over
+
+=item Make DBD specific handlers
+
+Each DBD has its own quirks and issues, it would be nice to be able to handle those issues with DBD::Mock in some way. I have an number of ideas already, but little time to sit down and really flesh them out. If you have any suggestions or thoughts, feel free to email me with them.
+
+=item Enhance the DBD::Mock::StatementTrack object
+
+I would like to have the DBD::Mock::StatementTrack object handle more of the mock_* attributes. This would encapsulate much of the mock_* behavior in one place, which would be a good thing. 
+
+I would also like to add the ability to bind a subroutine (or possibly an object) to the result set, so that the results can be somewhat more dynamic and allow for a more realistic interaction. 
+
+=back
+
+=head1 CODE COVERAGE
+
+I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Devel::Cover> report on this module test suite.
+
+ ------------------------ ------ ------ ------ ------ ------ ------ ------
+ File                       stmt branch   cond    sub    pod   time  total
+ ------------------------ ------ ------ ------ ------ ------ ------ ------
+ DBD/Mock.pm                91.5   85.7   86.2   94.4    0.0  100.0   89.7
+ ------------------------ ------ ------ ------ ------ ------ ------ ------
+ Total                      91.5   85.7   86.2   94.4    0.0  100.0   89.7
+ ------------------------ ------ ------ ------ ------ ------ ------ ------
+
 =head1 SEE ALSO
 
 L<DBI>
@@ -1193,7 +1241,7 @@ Test::MockObject article - L<http://www.perl.com/pub/a/2002/07/10/tmo.html>
 
 =head1 COPYRIGHT
 
-Copyright (c) 2004 Chris Winters. All rights reserved.
+Copyright (c) 2004 Stevan Little, Chris Winters. All rights reserved.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.

@@ -1,11 +1,14 @@
-# -*-perl-*-
-
-# $Id: 25_st_execute_bound_params.t,v 1.2 2004/02/04 21:36:23 cwinters Exp $
+#!/usr/bin/perl
 
 use strict;
-use Test::More tests => 8;
+use warnings;
 
-require DBI;
+use Test::More tests => 10;
+
+BEGIN {
+    use_ok('DBD::Mock');  
+	use_ok('DBI');
+}
 
 my $sql = 'SELECT * FROM foo WHERE bar = ? AND baz = ?';
 

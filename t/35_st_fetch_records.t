@@ -1,12 +1,16 @@
-# -*-perl-*-
-
-# $Id: 35_st_fetch_records.t,v 1.3 2004/05/09 04:48:46 cwinters Exp $
+#!/usr/bin/perl
 
 use strict;
-use Test::More tests => 37;
-use Data::Dumper qw( Dumper );
+use warnings;
 
-require DBI;
+use Test::More tests => 39;
+
+BEGIN {
+    use_ok('DBD::Mock');  
+	use_ok('DBI');
+}
+
+#use Data::Dumper qw( Dumper );
 
 my @rs_foo = (
     [ 'this', 'that' ],

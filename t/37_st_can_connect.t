@@ -1,51 +1,76 @@
-# -*-perl-*-
-
-# $Id: 37_st_can_connect.t,v 1.2 2004/05/08 19:50:06 cwinters Exp $
+#!/usr/bin/perl
 
 use strict;
-use Test::More tests => 3;
-require DBI;
+use warnings;
 
-my $dbh = DBI->connect( "DBI:Mock:", '', '',
-                        { RaiseError => 1, PrintError => 0 } );
+use Test::More tests => 23;
 
-# NOTE: checking to see if 'prepare' fails is covered in
-# 12_db_can_connect.t, so don't recheck it here
-
-my $sth_exec = eval { $dbh->prepare( 'SELECT foo FROM bar' ) };
-if ( $@ ) {
-    die "Unexpected failure on prepare: $@";
+BEGIN {
+    use_ok('DBD::Mock'); 
+    use_ok('DBI');
 }
+
+my $dbh = DBI->connect('DBI:Mock:', '', '', { RaiseError => 1, PrintError => 0 });
+isa_ok($dbh, "DBI::db");
+cmp_ok($dbh->{RaiseError}, '==', 1, '... RaiseError is set correctly');
+cmp_ok($dbh->{PrintError}, '==', 0, '... PrintError is set correctly');
+
+my $sth_exec = $dbh->prepare('SELECT foo FROM bar');
+isa_ok($sth_exec, "DBI::st");
 
 # turn off the handle between the prepare and execute...
-
 $dbh->{mock_can_connect} = 0;
-eval { $sth_exec->execute };
-if ( $@ ) {
-    like( $@, qr/^No connection present/,
-          'Executing statement against inactive db throws expected execption' );
-}
-else {
-    fail( 'Executing statement against inactive db did not throw exception!' );
-}
+
+# check our value is correctly set
+cmp_ok($dbh->{mock_can_connect}, '==', 0, '... can connect is set to 0');
+
+# and check the side effects of that
+ok(!$dbh->{Active}, '... the handle is not Active');
+ok(!$dbh->ping(), '... and ping returns false');
+
+# now try to execute it
+
+eval { $sth_exec->execute() };
+ok($@, '... we got an exception');
+like($@, qr/^No connection present/, '... we got the expected execption');
 
 # turn off the database between execute and fetch
 
 $dbh->{mock_can_connect} = 1;
-$dbh->{mock_add_resultset} = [ [ qw( foo bar ) ],
-                               [ qw( this that ) ],
-                               [ qw( tit tat ) ] ];
-my $sth_fetch = $dbh->prepare( 'SELECT foo, bar FROM baz' );
-$sth_fetch->execute;
-my $row = eval { $sth_fetch->fetchrow_arrayref };
-ok( ! $@, 'Initial fetch ok (db still active)' );
 
+# check our value is correctly set
+cmp_ok($dbh->{mock_can_connect}, '==', 1, '... can connect is set to 1');
+
+# and check the side effects of that
+ok($dbh->{Active}, '... the handle is Active');
+ok($dbh->ping(), '... and ping returns true');
+
+$dbh->{mock_add_resultset} = [[ qw(foo bar   ) ],  # column headers
+                              [ qw(this that ) ],  # first row values
+                              [ qw(never seen) ]]; # second row values
+                               
+my $sth_fetch = $dbh->prepare('SELECT foo, bar FROM baz');
+isa_ok($sth_fetch, "DBI::st");
+
+eval { $sth_fetch->execute() };
+ok(!$@, '... executed without exception');
+
+my $row = eval { $sth_fetch->fetchrow_arrayref() };
+ok(!$@, '... the first row was returned without execption');
+is_deeply($row, [ qw(this that) ], '... we got back the expected data in the first row');
+
+# now turn off the database
 $dbh->{mock_can_connect} = 0;
-$row = eval { $sth_fetch->fetchrow_arrayref };
-if ( $@ ) {
-    like( $sth_fetch->errstr, qr/^No connection present/,
-          'Fetching row against inactive db throws expected exception' );
-}
-else {
-    fail( 'Fetching row against inactive db did not throw exception!' );
-}
+
+# check our value is correctly set
+cmp_ok($dbh->{mock_can_connect}, '==', 0, '... can connect is set to 0');
+
+# and check the side effects of that
+ok(!$dbh->{Active}, '... the handle is not Active');
+ok(!$dbh->ping(), '... and ping returns false');
+
+$row = eval { $sth_fetch->fetchrow_arrayref() };
+ok($@, '... we got the exception');
+like($sth_fetch->errstr, 
+     qr/^No connection present/,
+     '... fetching row against inactive db throws expected exception' );
