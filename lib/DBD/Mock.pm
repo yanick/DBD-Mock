@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.28';
+our $VERSION = '1.29';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -28,6 +28,7 @@ our $errstr = '';       # will hold any error messages
 sub driver {
     return $drh if defined $drh;
     my ($class, $attributes) = @_;
+    $attributes = {} unless (defined($attributes) && (ref($attributes) eq 'HASH'));
     $drh = DBI::_new_drh( "${class}::dr", {
         Name        => 'Mock',
         Version     => $DBD::Mock::VERSION,
@@ -36,6 +37,8 @@ sub driver {
  		Errstr      => \$DBD::Mock::errstr,
         # mock attributes
         mock_connect_fail => 0,
+        # and pass in any extra attributes given
+        %{$attributes}
     });
     return $drh;
 }
@@ -115,20 +118,52 @@ sub connect {
     return $dbh;
 }
 
+sub FETCH {
+    my ($drh, $attr) = @_;
+    if ($attr =~ /^mock_/) {
+        if ($attr eq 'mock_connect_fail') {
+            return $drh->{'mock_connect_fail'};       
+        }
+        elsif ($attr eq 'mock_data_sources') {
+            unless (defined $drh->{'mock_data_sources'}) {
+                $drh->{'mock_data_sources'} = [ 'DBI:Mock:' ];
+            }
+            return $drh->{'mock_data_sources'};         
+        }
+        else {
+            return $drh->SUPER::FETCH($attr);
+        }
+    }    
+    else {
+        return $drh->SUPER::FETCH($attr);
+    }
+}
+
 sub STORE {
     my ($drh, $attr, $value) = @_;
     if ($attr =~ /^mock_/) {
         if ($attr eq 'mock_connect_fail') {
             return $drh->{'mock_connect_fail'} = $value ? 1 : 0;        
         }
-    }
+        elsif ($attr eq 'mock_data_sources') {
+            if (ref($value) ne 'ARRAY') {
+                $drh->DBI::set_err(1, "You must pass an array ref of data sources");
+                return undef;
+            }
+            return $drh->{'mock_data_sources'} = $value;
+        }
+        elsif ($attr eq 'mock_add_data_sources') {
+            return push @{$drh->{'mock_data_sources'}} => $value;            
+        }
+    }    
     else {
         return $drh->SUPER::STORE($attr, $value);
     }
 }
 
 sub data_sources {
-	return ("DBI:Mock:");
+    my $drh = shift;
+	return map { (/^DBI\:Mock\:/i) ? $_ : "DBI:Mock:$_" } @{$drh->FETCH('mock_data_sources')};
 }
 
 # Necessary to support DBI < 1.34
@@ -153,6 +188,12 @@ $DBD::Mock::db::imp_data_size = 0;
 sub ping {
  	my ( $dbh ) = @_;
  	return $dbh->{mock_can_connect};
+}
+
+sub get_info {
+    my ( $dbh, $attr ) = @_;
+    $dbh->{mock_get_info} ||= {};
+    return $dbh->{mock_get_info}{ $attr };
 }
 
 sub prepare {
@@ -244,6 +285,51 @@ sub prepare {
 }
 
 *prepare_cached = \&prepare;
+
+{
+    my $begin_work_commit;
+    sub begin_work {
+        my $dbh = shift;
+        if ($dbh->FETCH('AutoCommit')) { 
+            $dbh->STORE('AutoCommit', 0);
+            $begin_work_commit = 1;
+            return $dbh->prepare( 'BEGIN WORK' );        
+        }
+        else {
+            return $dbh->set_err(1, 'AutoCommit is off, you are already within a transaction');
+        }
+    }
+
+    sub commit {
+        my $dbh = shift;
+        if ($dbh->FETCH('AutoCommit') && $dbh->FETCH('Warn')) {
+            return $dbh->set_err(1, "commit ineffective with AutoCommit" );
+        }    
+        my $sth = $dbh->prepare( 'COMMIT' );
+
+        if ($begin_work_commit) {
+            $dbh->STORE('AutoCommit', 1);
+            $begin_work_commit = 0;
+        }
+
+        return $sth;
+    }
+
+    sub rollback {
+        my $dbh = shift;
+        if ($dbh->FETCH('AutoCommit') && $dbh->FETCH('Warn')) {
+            return $dbh->set_err(1, "rollback ineffective with AutoCommit" );
+        }    
+        my $sth = $dbh->prepare( 'ROLLBACK' );
+
+        if ($begin_work_commit) {
+            $dbh->STORE('AutoCommit', 1);
+            $begin_work_commit = 0;
+        }
+
+        return $sth;
+    }
+}
 
 sub FETCH {
     my ( $dbh, $attrib ) = @_;
@@ -352,6 +438,9 @@ sub STORE {
                 if defined $value;
         $dbh->{mock_session} = $value;        
     }
+    elsif ($attrib =~ /^mock_(add_)?data_sources/) {
+        $dbh->{Driver}->STORE($attrib, $value);
+    }    
     elsif ($attrib =~ /^mock/) {  
         return $dbh->{$attrib} = $value;
     }
@@ -384,6 +473,19 @@ sub bind_param {
     my $tracker = $sth->FETCH( 'mock_my_history' );
     $tracker->bound_param( $param_num, $val );
     return 1;
+}
+
+sub bind_param_inout {
+	my ($sth, $param_num, $val, $max_len) = @_;
+	# check that $val is a scalar ref
+	(UNIVERSAL::isa($val, 'SCALAR')) 
+	    || $sth->{Database}->DBI::set_err(1, "need a scalar ref to bind_param_inout, not $val");
+	# check for positive $max_len
+	($max_len > 0) 
+	    || $sth->{Database}->DBI::set_err(1, "need to specify a maximum length to bind_param_inout");
+	my $tracker = $sth->FETCH( 'mock_my_history' );
+	$tracker->bound_param( $param_num, $val );
+	return 1;
 }
 
 sub execute {
@@ -420,14 +522,23 @@ sub execute {
 
 sub fetch {
     my ($sth) = @_;
-
     unless ($sth->{Database}->{mock_can_connect}) {
         $sth->{Database}->DBI::set_err(1, "No connection present");
         return undef;
     }
-
+    
     my $tracker = $sth->FETCH( 'mock_my_history' );
     return $tracker->next_record;
+}
+
+sub fetchrow_array {
+    my ($sth) = @_;
+    return @{$sth->DBD::Mock::st::fetch()};
+}
+
+sub fetchrow_arrayref {
+    my ($sth) = @_;
+    return $sth->DBD::Mock::st::fetch();  
 }
 
 sub finish {
@@ -445,9 +556,30 @@ sub FETCH {
     $sth->trace_msg( "Fetching ST attribute '$attrib'\n" );
     my $tracker = $sth->{mock_my_history};
     $sth->trace_msg( "Retrieved tracker: " . ref( $tracker ) . "\n" );
+    # NAME attributes
     if ( $attrib eq 'NAME' ) {
-        return $tracker->fields;
+        return [ @{$tracker->fields} ];
     }
+    elsif ( $attrib eq 'NAME_lc' ) {
+        return [ map { lc($_) } @{$tracker->fields} ];
+    }    
+    elsif ( $attrib eq 'NAME_uc' ) {
+        return [ map { uc($_) } @{$tracker->fields} ];
+    }    
+    # NAME_hash attributes    
+    elsif ( $attrib eq 'NAME_hash' ) {
+        my $i = 0;
+        return { map { $_ => $i++ } @{$tracker->fields} };
+    }
+    elsif ( $attrib eq 'NAME_hash_lc' ) {
+        my $i = 0;
+        return { map { lc($_) => $i++ } @{$tracker->fields} };
+    }    
+    elsif ( $attrib eq 'NAME_hash_uc' ) {
+        my $i = 0;
+        return { map { uc($_) => $i++ } @{$tracker->fields} };
+    }   
+    # others    
     elsif ( $attrib eq 'NUM_OF_FIELDS' ) {
         return $tracker->num_fields;
     }
@@ -516,7 +648,7 @@ sub STORE {
     if ($attrib =~ /^mock/) {
         return $sth->{$attrib} = $value;
     }
-    elsif ($attrib eq 'NAME') {
+    elsif ($attrib =~ /^NAME/) {
         # no-op...
         return;
     }
@@ -996,6 +1128,14 @@ This is a boolean property which when set to true (C<1>) will not allow DBI to c
   
 This feature is conceptually different from the 'mock_can_connect' attribute of the C<$dbh> in that it has a driver-wide scope, where 'mock_can_connect' is handle-wide scope. It also only prevents the initial connection, any C<$dbh> handles created prior to setting 'mock_connect_fail' to true (C<1>) will still go on working just fine.
 
+=item B<mock_data_sources>
+
+This is an ARRAY reference which holds fake data sources which are returned by the Driver and Database Handle's C<data_source()> method.
+
+=item B<mock_add_data_sources>
+
+This takes a string and adds it to the 'mock_data_sources' attribute.
+
 =back
 
 =head2 Database Handle Properties
@@ -1160,6 +1300,10 @@ It should also be noted that the C<rows> method will return the number of record
  
 Now I admit this is not the most elegant way to go about this, but it works for me for now, and until I can come up with a better method, or someone sends me a patch ;) it will do for now.
 
+=item B<mock_get_info>
+
+This attribute can be used to set up values for get_info(). It takes a hashref of attribute_name/value pairs. See L<DBI> for more information on the information types and their meaning.
+
 =item B<mock_session>
 
 This attribute can be used to set a current DBD::Mock::Session object. For more information on this, see the L<DBD::Mock::Session> docs below. This attribute can also be used to remove the current session from the C<$dbh> simply by setting it to C<undef>. 
@@ -1198,6 +1342,30 @@ Instead of providing a subroutine reference you can use an object. The only requ
 
   my $parser = SQL::Parser->new( 'mysql', { RaiseError => 1 } );
   $dbh->{mock_add_parser} = $parser;
+
+=item B<mock_data_sources> & B<mock_add_data_sources>
+
+These properties will dispatch to the Driver's properties of the same name.
+
+=back
+
+=head2 Database Driver Methods
+
+In order to capture begin_work(), commit(), and rollback(), DBD::Mock will create statements for them, as if you had issued them in the appropriate SQL command line program. They will go through the standard prepare()-execute() cycle, meaning that any custom SQL parsers will be triggered and DBD::Mock::Session will need to know about these statements.
+
+=over 4
+
+=item B<begin_work>
+
+This will create a statement with SQL of "BEGIN WORK" and no parameters.
+
+=item B<commit>
+
+This will create a statement with SQL of "COMMIT" and no parameters.
+
+=item B<rollback>
+
+This will create a statement with SQL of "ROLLBACK" and no parameters.
 
 =back
 
@@ -1515,9 +1683,9 @@ I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Deve
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
  File                           stmt branch   cond    sub    pod   time  total
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- lib/DBD/Mock.pm                90.7   86.6   82.6   94.2    0.0  100.0   89.1
+ DBD/Mock.pm                    93.2   88.4   77.2   94.8    0.0  100.0   90.7
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- Total                          90.7   86.6   82.6   94.2    0.0  100.0   89.1
+ Total                          93.2   88.4   77.2   94.8    0.0  100.0   90.7
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO
@@ -1530,13 +1698,15 @@ L<Test::MockObject>, which provided the approach
 
 Test::MockObject article - L<http://www.perl.com/pub/a/2002/07/10/tmo.html>
 
-=head1 ACKNOWLEDGEMENTS  
+=head1 ACKNOWLEDGEMENTS
 
 =over 4
 
-=item Thanks to Rob Kinyon for many ideas, thoughts and discussions about DBD::Mock
-
 =item Thanks to Justin DeVuyst for the mock_connect_fail idea
+
+=item Thanks to Thilo Planz for the code for C<bind_param_inout>
+
+=item Thanks to Shlomi Fish for help tracking down RT Bug #11515
 
 =back
 
@@ -1552,3 +1722,7 @@ it under the same terms as Perl itself.
 Chris Winters E<lt>chris@cwinters.comE<gt>
 
 Stevan Little E<lt>stevan@iinteractive.comE<gt>
+
+Rob Kinyon E<lt>rob.kinyon@gmail.comE<gt>
+
+=cut
