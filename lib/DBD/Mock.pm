@@ -19,7 +19,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.29';
+our $VERSION = '1.30';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;		# will hold any error codes
@@ -82,6 +82,11 @@ sub _set_mock_attribute_aliases {
     return $AttributeAliases{lc($dbname)}->{$dbh_or_sth}->{$key} = $value;
 }
 
+## Some useful constants
+
+use constant NULL_RESULTSET => [[]];
+
+
 ########################################
 # DRIVER
 
@@ -96,7 +101,7 @@ sub connect {
     my ($drh, $dbname, $user, $auth, $attributes) = @_;
     if ($drh->{'mock_connect_fail'} == 1) {
         $drh->DBI::set_err(1, "Could not connect to mock database");
-        return undef;
+        return;
     }
     $attributes ||= {};
     if ($dbname && $DBD::Mock::AttributeAliasing) {
@@ -114,7 +119,7 @@ sub connect {
         mock_can_connect       => 1,
         # rest of attributes
         %{ $attributes },
-    }) || return undef;
+    }) || return;
     return $dbh;
 }
 
@@ -148,7 +153,7 @@ sub STORE {
         elsif ($attr eq 'mock_data_sources') {
             if (ref($value) ne 'ARRAY') {
                 $drh->DBI::set_err(1, "You must pass an array ref of data sources");
-                return undef;
+                return;
             }
             return $drh->{'mock_data_sources'} = $value;
         }
@@ -213,7 +218,7 @@ sub prepare {
         my $parser_error = $@;
         chomp $parser_error;
         $dbh->DBI::set_err(1, "Failed to parse statement. Error: ${parser_error}. Statement: ${statement}");
-        return undef;
+        return;
     }
     
     if (my $session = $dbh->FETCH('mock_session')) {
@@ -224,7 +229,7 @@ sub prepare {
             my $session_error = $@;
             chomp $session_error;
             $dbh->DBI::set_err(1, "Session Error: ${session_error}. Statement: ${statement}");
-            return undef;
+            return;
         }        
     }    
     
@@ -241,9 +246,11 @@ sub prepare {
     my $rs;
     if ( my $all_rs = $dbh->{mock_rs} ) {
         if ( my $by_name = $all_rs->{named}{$statement} ) {
-            # we want to copy this, becauase
-            # it is meant to be reusable
-            $rs = [ @{$by_name} ];
+            # We want to copy this, because it is meant to be reusable
+            $rs = [ @{$by_name->{results}} ];
+            if (exists $by_name->{failure}) {
+                $track_params{failure} = [ @{$by_name->{failure}} ];
+            }
         }
         else {
             $rs = shift @{$all_rs->{ordered}};
@@ -266,7 +273,7 @@ sub prepare {
 
     unless ($dbh->FETCH('Active')) {
         $dbh->DBI::set_err(1, "No connection present");
-        return undef;
+        return;
     }
 
     # This history object will track everything done to the statement
@@ -293,7 +300,10 @@ sub prepare {
         if ($dbh->FETCH('AutoCommit')) { 
             $dbh->STORE('AutoCommit', 0);
             $begin_work_commit = 1;
-            return $dbh->prepare( 'BEGIN WORK' );        
+            my $sth = $dbh->prepare( 'BEGIN WORK' );
+            my $rc = $sth->execute();
+            $sth->finish();
+            return $rc;       
         }
         else {
             return $dbh->set_err(1, 'AutoCommit is off, you are already within a transaction');
@@ -305,14 +315,17 @@ sub prepare {
         if ($dbh->FETCH('AutoCommit') && $dbh->FETCH('Warn')) {
             return $dbh->set_err(1, "commit ineffective with AutoCommit" );
         }    
+        
         my $sth = $dbh->prepare( 'COMMIT' );
-
+        my $rc = $sth->execute();
+        $sth->finish();
+        
         if ($begin_work_commit) {
             $dbh->STORE('AutoCommit', 1);
             $begin_work_commit = 0;
         }
 
-        return $sth;
+        return $rc;
     }
 
     sub rollback {
@@ -320,15 +333,31 @@ sub prepare {
         if ($dbh->FETCH('AutoCommit') && $dbh->FETCH('Warn')) {
             return $dbh->set_err(1, "rollback ineffective with AutoCommit" );
         }    
+        
         my $sth = $dbh->prepare( 'ROLLBACK' );
-
+        my $rc = $sth->execute();
+        $sth->finish();
+        
         if ($begin_work_commit) {
             $dbh->STORE('AutoCommit', 1);
             $begin_work_commit = 0;
         }
 
-        return $sth;
+        return $rc;
     }
+}
+
+sub selectcol_arrayref {
+    my ($dbh, $query, $attrib) = @_; 
+    my $a_ref = $dbh->selectall_arrayref($query, $attrib);
+
+    my (@res_list, $res);
+
+    for $res (@{$a_ref}) {
+        push @res_list, ${ $res }[0];
+    }
+
+    return @res_list;
 }
 
 sub FETCH {
@@ -398,7 +427,7 @@ sub STORE {
             my $error = "Parser must be a code reference or object with 'parse()' " .
                         "method (Given type: '$parser_type')";
             $dbh->DBI::set_err(1, $error);
-            return undef;
+            return;
         }
         push @{$dbh->{mock_parser}}, $value;
         return $value;
@@ -419,7 +448,15 @@ sub STORE {
                     "as hashref key to 'mock_add_resultset'.\n";
             }
             my @copied_values = @{$value->{results}};
-            $dbh->{mock_rs}{named}{$name} = \@copied_values;
+#            $dbh->{mock_rs}{named}{$name} = \@copied_values;
+            $dbh->{mock_rs}{named}{$name} = {
+                results => \@copied_values,
+            };
+            if ( exists $value->{failure} ) {
+                $dbh->{mock_rs}{named}{$name}{failure} = [
+                    @{$value->{failure}},
+                ];
+            }
             return \@copied_values;
         }
         else {
@@ -497,6 +534,12 @@ sub execute {
     }
 
     my $tracker = $sth->FETCH( 'mock_my_history' );
+    
+    if ($tracker->has_failure()) {
+        $sth->{Database}->DBI::set_err($tracker->get_failure());
+        return 0;        
+    }
+    
     if ( @params ) {
         $tracker->bound_param_trailing( @params );
     }
@@ -510,7 +553,7 @@ sub execute {
             my $session_error = $@;
             chomp $session_error;
             $dbh->DBI::set_err(1, "Session Error: ${session_error}");
-            return undef;
+            return;
         }        
     }
     
@@ -524,7 +567,7 @@ sub fetch {
     my ($sth) = @_;
     unless ($sth->{Database}->{mock_can_connect}) {
         $sth->{Database}->DBI::set_err(1, "No connection present");
-        return undef;
+        return;
     }
     
     my $tracker = $sth->FETCH( 'mock_my_history' );
@@ -533,12 +576,66 @@ sub fetch {
 
 sub fetchrow_array {
     my ($sth) = @_;
-    return @{$sth->DBD::Mock::st::fetch()};
+    my $row = $sth->DBD::Mock::st::fetch();
+    return unless ref($row) eq 'ARRAY';
+    return @{$row};
 }
 
 sub fetchrow_arrayref {
     my ($sth) = @_;
     return $sth->DBD::Mock::st::fetch();  
+}
+
+sub fetchrow_hashref {
+    my ($sth) = @_;
+
+    my $tracker = $sth->FETCH( 'mock_my_history' );
+    my $rethash = {};
+    my $rec;
+
+    if ( defined ($rec = $tracker->next_record())) {
+        my $i;
+        my @fields = @{$tracker->fields};
+
+        for ($i=0;$i<(scalar @$rec);$i++) {
+            $rethash->{$fields[$i]} = $$rec[$i];
+        }
+
+        return $rethash;
+    }
+
+    return undef;
+}
+
+sub fetchall_hashref {
+    my ($sth, $keyfield) = @_;
+
+    my $tracker = $sth->FETCH( 'mock_my_history' );
+    my $rethash = {};
+    my @fields = @{$tracker->fields};
+
+    # check if $keyfield is not an integer
+    if ( !($keyfield =~ /^-?\d+$/) ) {
+        my $keyind;
+    
+        # search for index of item that matches $keyfield
+        for (my $i = 0; $i < scalar @fields; $i++) {
+            if ($fields[$i] eq $keyfield) {
+	            $keyind = $i;
+            }
+        }
+    
+        $keyfield = $keyind;
+    }
+
+    my $rec;
+    while ( defined ($rec = $tracker->next_record())) {
+        for (my $i = 0; $i < (scalar @{$rec}); $i++) {
+            $rethash->{$rec->[$keyfield]}->{$fields[$i]} = $rec->[$i];
+        }
+    }
+
+    return $rethash;
 }
 
 sub finish {
@@ -703,7 +800,8 @@ sub new {
     $params{return_data}  ||= [];
     $params{fields}       ||= [];
     $params{bound_params} ||= [];
-    $params{statement}    ||= "";    
+    $params{statement}    ||= "";   
+    $params{failure}      ||= undef;     
     # these params should never be overridden
     # and should always start out in a default
     # state to assure the sanity of this class    
@@ -717,6 +815,16 @@ sub new {
     # this violates encapsulation
     my $self = bless { %params }, $class;
     return $self;
+}
+
+sub has_failure {
+    my ($self) = @_;
+    $self->{failure} ? 1 : 0;
+}
+
+sub get_failure {
+    my ($self) = @_;
+    @{$self->{failure}};    
 }
 
 sub num_fields {
@@ -780,7 +888,7 @@ sub mark_executed {
 
 sub next_record {
     my ($self) = @_;
-    return undef if $self->is_depleted;
+    return if $self->is_depleted;
     my $rec_num = $self->current_record_num;
     my $rec = $self->return_data->[$rec_num];
     $self->current_record_num($rec_num + 1);
@@ -1300,6 +1408,8 @@ It should also be noted that the C<rows> method will return the number of record
  
 Now I admit this is not the most elegant way to go about this, but it works for me for now, and until I can come up with a better method, or someone sends me a patch ;) it will do for now.
 
+If you want a given statement to fail, you will have to use the hashref method and add a 'failure' key. That key can be handed an arrayref with the error number and error string, in that order. It can also be handed a hashref with two keys - errornum and errorstring. If the 'failure' key has no useful value associated with it, the errornum will be '1' and the errorstring will be 'Unknown error'.
+
 =item B<mock_get_info>
 
 This attribute can be used to set up values for get_info(). It takes a hashref of attribute_name/value pairs. See L<DBI> for more information on the information types and their meaning.
@@ -1560,7 +1670,7 @@ This object can be used to iterate through the current set of C<DBD::Mock::State
 
 B<next>
 
-Calling C<next> will return the next C<DBD::Mock::StatementTrack> object in the history. If there are no more C<DBD::Mock::StatementTrack> objects available, then this method will return undef. 
+Calling C<next> will return the next C<DBD::Mock::StatementTrack> object in the history. If there are no more C<DBD::Mock::StatementTrack> objects available, then this method will return false. 
 
 B<reset>
 
@@ -1627,6 +1737,18 @@ Calling this method will reset the state of the session object so that it can be
 All functionality listed here is highly experimental and should be used with great caution (if at all). 
 
 =over 4
+
+=item Error handling in I<mock_add_resultset>
+
+We have added experimental erro handling in I<mock_add_resultset> the best example is the test file F<t/023_statement_failure.t>, but it looks something like this:
+
+  $dbh->{mock_add_resultset} = {
+      sql => 'SELECT foo FROM bar',
+      results => DBD::Mock->NULL_RESULTSET,
+      failure => [ 5, 'Ooops!' ],
+  };
+
+The C<5> is the DBI error number, and C<'Ooops!'> is the error string passed to DBI. This basically allows you to force an error condition to occur when a given SQL statement is execute. We are currently working on allowing more control on the 'when' and 'where' the error happens, look for it in future releases.
 
 =item Attribute Aliasing
 
@@ -1698,6 +1820,14 @@ L<Test::MockObject>, which provided the approach
 
 Test::MockObject article - L<http://www.perl.com/pub/a/2002/07/10/tmo.html>
 
+Perl Code Kata: Testing Databases - L<http://www.perl.com/pub/a/2005/02/10/database_kata.html>
+
+=head1 DISCUSSION GROUP
+
+We have created a B<DBD::Mock> google group for discussion/questions about this module.
+
+L<http://groups-beta.google.com/group/DBDMock>
+
 =head1 ACKNOWLEDGEMENTS
 
 =over 4
@@ -1707,6 +1837,10 @@ Test::MockObject article - L<http://www.perl.com/pub/a/2002/07/10/tmo.html>
 =item Thanks to Thilo Planz for the code for C<bind_param_inout>
 
 =item Thanks to Shlomi Fish for help tracking down RT Bug #11515
+
+=item Thanks to Collin Winter for the patch to fix the C<begin_work()>, C<commit()> and C<rollback()> methods.
+
+=item Thanks to Andrew McHarg E<lt>amcharg@acm.orgE<gt> for C<fetchall_hashref()>, C<fetchrow_hashref()> and C<selectcol_arrayref()> methods and tests.
 
 =back
 
