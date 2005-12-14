@@ -19,10 +19,10 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.31';
+our $VERSION = '1.32';
 
 our $drh    = undef;    # will hold driver handle
-our $err    = 0;		# will hold any error codes
+our $err    = 0;        # will hold any error codes
 our $errstr = '';       # will hold any error messages
 
 sub driver {
@@ -34,7 +34,7 @@ sub driver {
         Version     => $DBD::Mock::VERSION,
         Attribution => 'DBD Mock driver by Chris Winters & Stevan Little (orig. from Tim Bunce)',
         Err         => \$DBD::Mock::err,
- 		Errstr      => \$DBD::Mock::errstr,
+        Errstr      => \$DBD::Mock::errstr,
         # mock attributes
         mock_connect_fail => 0,
         # and pass in any extra attributes given
@@ -56,18 +56,18 @@ sub CLONE { undef $drh }
 our $AttributeAliasing = 0;
 
 my %AttributeAliases = (
-    mysql  => {
-            db => {
-                # aliases can either be a string which is obvious
-                mysql_insertid => 'mock_last_insert_id'
-            },
-            st => {
-                # but they can also be a subroutine reference whose
-                # first argument will be either the $dbh or the $sth
-                # depending upon which context it is aliased in. 
-                mysql_insertid => sub { (shift)->{Database}->{'mock_last_insert_id'} }
-            }
+    mysql => {
+        db => {
+            # aliases can either be a string which is obvious
+            mysql_insertid => 'mock_last_insert_id'
         },
+        st => {
+            # but they can also be a subroutine reference whose
+            # first argument will be either the $dbh or the $sth
+            # depending upon which context it is aliased in. 
+            mysql_insertid => sub { (shift)->{Database}->{'mock_last_insert_id'} }
+        }
+    },
 );
 
 sub _get_mock_attribute_aliases {
@@ -168,7 +168,7 @@ sub STORE {
 
 sub data_sources {
     my $drh = shift;
-	return map { (/^DBI\:Mock\:/i) ? $_ : "DBI:Mock:$_" } @{$drh->FETCH('mock_data_sources')};
+    return map { (/^DBI\:Mock\:/i) ? $_ : "DBI:Mock:$_" } @{$drh->FETCH('mock_data_sources')};
 }
 
 # Necessary to support DBI < 1.34
@@ -191,8 +191,8 @@ use warnings;
 $DBD::Mock::db::imp_data_size = 0;
 
 sub ping {
- 	my ( $dbh ) = @_;
- 	return $dbh->{mock_can_connect};
+     my ( $dbh ) = @_;
+     return $dbh->{mock_can_connect};
 }
 
 sub get_info {
@@ -234,8 +234,14 @@ sub prepare {
     }    
     
     my $sth = DBI::_new_sth($dbh, { Statement => $statement });
-    
-    $dbh->{mock_last_insert_id}++ if ($statement =~ /^\s*?INSERT/);
+
+    # XXX - this will not interfere 
+    # with the mock_last_insert_ids
+    # attribute, but if that one is
+    # used it will overwrite this one
+    if ($statement =~ /^\s*?INSERT/) {
+        $dbh->{mock_last_insert_id}++;        
+    }
     
     $sth->trace_msg("Preparing statement '${statement}'\n", 1);
     
@@ -268,8 +274,8 @@ sub prepare {
         $sth->trace_msg('No return data set in DBH', 1);
     }
 
- 	# do not allow a statement handle to be created if there is no
- 	# connection present.
+     # do not allow a statement handle to be created if there is no
+     # connection present.
 
     unless ($dbh->FETCH('Active')) {
         $dbh->DBI::set_err(1, "No connection present");
@@ -377,7 +383,7 @@ sub FETCH {
     if ($attrib eq 'AutoCommit') {
         return $dbh->{AutoCommit};
     }
- 	elsif ($attrib eq 'Active') {
+     elsif ($attrib eq 'Active') {
         return $dbh->{mock_can_connect};
     }
     elsif ($attrib eq 'mock_all_history') {
@@ -447,7 +453,6 @@ sub STORE {
         $dbh->{mock_rs} ||= { named   => {},
                               ordered => [] };
         if ( ref $value eq 'ARRAY' ) {
-#            print STDERR "mock_add_resultset: " . (join " | " => map { join ", " => @{$_} } @{$value}) . "\n";        
             my @copied_values = @{$value};
             push @{$dbh->{mock_rs}{ordered}}, \@copied_values;
             return \@copied_values;
@@ -459,7 +464,6 @@ sub STORE {
                     "as hashref key to 'mock_add_resultset'.\n";
             }
             my @copied_values = @{$value->{results}};
-#            $dbh->{mock_rs}{named}{$name} = \@copied_values;
             $dbh->{mock_rs}{named}{$name} = {
                 results => \@copied_values,
             };
@@ -476,9 +480,16 @@ sub STORE {
         }
     }
     elsif ($attrib eq 'mock_start_insert_id') {
-        # we start at one minus the start id
-        # so that the increment works
-        $dbh->{mock_last_insert_id} = $value - 1;
+        if ( ref $value eq 'ARRAY' ) {
+            $dbh->{mock_last_insert_ids} = {} unless $dbh->{mock_last_insert_ids};
+            $dbh->{mock_last_insert_ids}{$value->[0]} = $value->[1];
+        }
+        else {
+            # we start at one minus the start id
+            # so that the increment works            
+            $dbh->{mock_last_insert_id} = $value - 1;
+        }        
+        
     }
     elsif ($attrib eq 'mock_session') {
         (ref($value) && UNIVERSAL::isa($value, 'DBD::Mock::Session'))
@@ -524,39 +535,39 @@ sub bind_param {
 }
 
 sub bind_param_inout {
-	my ($sth, $param_num, $val, $max_len) = @_;
-	# check that $val is a scalar ref
-	(UNIVERSAL::isa($val, 'SCALAR')) 
-	    || $sth->{Database}->DBI::set_err(1, "need a scalar ref to bind_param_inout, not $val");
-	# check for positive $max_len
-	($max_len > 0) 
-	    || $sth->{Database}->DBI::set_err(1, "need to specify a maximum length to bind_param_inout");
-	my $tracker = $sth->FETCH( 'mock_my_history' );
-	$tracker->bound_param( $param_num, $val );
-	return 1;
+    my ($sth, $param_num, $val, $max_len) = @_;
+    # check that $val is a scalar ref
+    (UNIVERSAL::isa($val, 'SCALAR')) 
+        || $sth->{Database}->DBI::set_err(1, "need a scalar ref to bind_param_inout, not $val");
+    # check for positive $max_len
+    ($max_len > 0) 
+        || $sth->{Database}->DBI::set_err(1, "need to specify a maximum length to bind_param_inout");
+    my $tracker = $sth->FETCH( 'mock_my_history' );
+    $tracker->bound_param( $param_num, $val );
+    return 1;
 }
 
 sub execute {
     my ($sth, @params) = @_;
+    my $dbh = $sth->{Database};
 
-    unless ($sth->{Database}->{mock_can_connect}) {
-        $sth->{Database}->DBI::set_err(1, "No connection present");
+    unless ($dbh->{mock_can_connect}) {
+        $dbh->DBI::set_err(1, "No connection present");
         return 0;
     }
 
     my $tracker = $sth->FETCH( 'mock_my_history' );
     
     if ($tracker->has_failure()) {
-        $sth->{Database}->DBI::set_err($tracker->get_failure());
+        $dbh->DBI::set_err($tracker->get_failure());
         return 0;        
     }
     
     if ( @params ) {
-        $tracker->bound_param_trailing( @params );
+        $tracker->bind_params( @params );
     }
     
-    if (my $session = $sth->{Database}->{mock_session}) {
-        my $dbh = $sth->{Database};
+    if (my $session = $dbh->{mock_session}) {
         eval {
             $session->verify_bound_params($dbh, $tracker->bound_params());
         };
@@ -568,10 +579,22 @@ sub execute {
         }        
     }
     
+    # handle INSERT statements and the mock_last_insert_ids
+    if ($dbh->{Statement} =~ /^\s*?insert\s+into\s+(\S+)/i &&
+        $dbh->{mock_last_insert_ids}                  &&
+        $dbh->{mock_last_insert_ids}{$1}) {
+        $dbh->{mock_last_insert_id} = $dbh->{mock_last_insert_ids}{$1}++;
+    }         
+    
     $tracker->mark_executed;
     my $fields = $tracker->fields;
     $sth->STORE( NUM_OF_PARAMS => $tracker->num_params );
-    return '0E0';
+    
+    # always return 0E0 for Selects
+    if ($dbh->{Statement} =~ /^\s*?select/i) {
+        return '0E0';
+    }
+    return ($sth->rows() || '0E0');
 }
 
 sub fetch {
@@ -647,13 +670,13 @@ sub fetchall_hashref {
         my $found = 0;
         # search for index of item that matches $keyfield
         foreach my $index (0 .. scalar(@{$fields})) {
-	        if ($fields->[$index] eq $keyfield) {
-	            $found++;
-	            # now make the keyfield the index
-	            $keyfield = $index;
-	            # and jump out of the loop :)
-	            last;
-	        }
+            if ($fields->[$index] eq $keyfield) {
+                $found++;
+                # now make the keyfield the index
+                $keyfield = $index;
+                # and jump out of the loop :)
+                last;
+            }
         }
         unless ($found) {
             $sth->{Database}->DBI::set_err(1, "Could not find key field '$keyfield'");
@@ -808,11 +831,11 @@ use warnings;
 my $connection;
 
 sub connect {
-	my $class = "DBD::Mock::Pool";
-	$class = shift unless ref($_[0]);
-	my ($driver_handle, $username, $password, $attributes) = @_;
+    my $class = "DBD::Mock::Pool";
+    $class = shift unless ref($_[0]);
+    my ($driver_handle, $username, $password, $attributes) = @_;
     $connection = bless $driver_handle->connect(), "DBD::Mock::Pool::db" unless $connection;
-	return $connection;
+    return $connection;
 }
 
 package DBD::Mock::Pool::db;
@@ -890,6 +913,11 @@ sub bound_param {
 sub bound_param_trailing {
     my ($self, @values) = @_;
     push @{$self->{bound_params}}, @values;
+}
+
+sub bind_params {
+    my ($self, @values) = @_;
+    @{$self->{bound_params}} = @values;
 }
 
 # Rely on the DBI's notion of Active: a statement is active if it's
@@ -1052,7 +1080,6 @@ sub reset { (shift)->{state_index} = 0 }
 
 sub verify_statement {
     my ($self, $dbh, $statement) = @_;
-#    print ">>> index:" . $self->{state_index} . " num: " . scalar(@{$self->{states}}) . "\n";
     ($self->{state_index} < scalar(@{$self->{states}}))
         || die "Session states exhausted, only '" . scalar(@{$self->{states}}) . "' in DBD::Mock::Session (" . $self->{name} . ")";
     my $current_state = $self->{states}->[$self->{state_index}];
@@ -1061,24 +1088,25 @@ sub verify_statement {
         || die "Bad state '" . $self->{state_index} .  "' in DBD::Mock::Session (" . $self->{name} . ")";
     # try the SQL
     my $SQL = $current_state->{statement};
-#    print STDERR "Testing statement:\n\tgot:      $statement\n\texpected: $SQL\n";    
     unless (ref($SQL)) {
         ($SQL eq $statement) 
-            || die "Statement does not match current state in DBD::Mock::Session (" . $self->{name} . ")";
+            || die "Statement does not match current state in DBD::Mock::Session (" . $self->{name} . ")\n" .
+                   "      got: $statement\n" .
+                   " expected: $SQL";
     }
     elsif (ref($SQL) eq 'Regexp') {
         ($statement =~ /$SQL/) 
-            || die "Statement does not match current state in DBD::Mock::Session (" . $self->{name} . ")";
+            || die "Statement does not match current state (with Regexp) in DBD::Mock::Session (" . $self->{name} . ")\n" .
+                   "      got: $statement\n" .
+                   " expected: $SQL";
     }
     elsif (ref($SQL) eq 'CODE') {
         ($SQL->($statement, $current_state)) 
-            || die "Statement does not match current state in DBD::Mock::Session (" . $self->{name} . ")";
+            || die "Statement does not match current state (with CODE ref) in DBD::Mock::Session (" . $self->{name} . ")";
     }
     else {
         die "Bad 'statement' value '$SQL' in current state in DBD::Mock::Session (" . $self->{name} . ")";
     }
-    # if we are hear then things worked out well :)
-#    print STDERR "Adding Results: " . (join " | " => map { join ", " => @{$_} } @{$current_state->{results}}) . "\n";
     # copy the result sets so that 
     # we can re-use the session 
     $dbh->STORE('mock_add_resultset' => [ @{$current_state->{results}} ]);
@@ -1090,11 +1118,23 @@ sub verify_bound_params {
     if (exists ${$current_state}{bound_params}) {
         my $expected = $current_state->{bound_params};
         (scalar(@{$expected}) == scalar(@{$params}))
-            || die "Not the same number of bound params in current state in DBD::Mock::Session (" . $self->{name} . ")";
+            || die "Not the same number of bound params in current state in DBD::Mock::Session (" . $self->{name} . ")\n" .
+                   "      got: " . scalar(@{$params}) . "\n" .
+                   " expected: " . scalar(@{$expected});
         for (my $i = 0; $i < scalar(@{$params}); $i++) {
-            no warnings;
-            ($params->[$i] eq $expected->[$i])
-                || die "Bound params do not match in current state in DBD::Mock::Session (" . $self->{name} . ")"; 
+            no warnings;    
+            if (ref($expected->[$i]) eq 'Regexp') {
+                ($params->[$i] =~ /$expected->[$i]/)
+                    || die "Bound params do not match (using regexp) in current state in DBD::Mock::Session (" . $self->{name} . ")\n" .
+                           "      got: " . $params->[$i] . "\n" .
+                           " expected: " . $expected->[$i];                 
+            }
+            else {
+                ($params->[$i] eq $expected->[$i])
+                    || die "Bound params do not match in current state in DBD::Mock::Session (" . $self->{name} . ")\n" . 
+                           "      got: " . $params->[$i] . "\n" .
+                           " expected: " . $expected->[$i];    
+            }
         }
     }
     # and make sure we go to 
@@ -1459,7 +1499,21 @@ This attribute can be used to set a current DBD::Mock::Session object. For more 
 
 =item B<mock_last_insert_id>
 
-This attribute is incremented each time an INSERT statement is passed to prepare on a per-handle basis. It's starting value can be set with  the 'mock_start_insert_id' attribute (see below).
+This attribute is incremented each time an INSERT statement is passed to C<prepare> on a per-handle basis. It's starting value can be set with  the 'mock_start_insert_id' attribute (see below).
+
+This attribute also can be used with an ARRAY ref parameter, it's behavior is slightly different in that instead of incrementing the value for every C<prepare> it will only increment for each C<execute>. This allows it to be used over multiple C<execute> calls in a single C<$sth>. It's usage looks like this:
+
+  $dbh->{mock_last_insert_id} = [ 'Foo', 10 ];
+  
+  my $sth = $dbh->prepare('INSERT INTO Foo (foo, bar) VALUES(?, ?)');
+  
+  $sth->execute(1, 2);
+  # $dbh->{mock_last_insert_id} == 10
+  
+  $sth->execute(3, 4);
+  # $dbh->{mock_last_insert_id} == 11
+
+For more examples, please refer to the test file F<t/025_mock_last_insert_id.t>.
 
 =item B<mock_start_insert_id>
 
@@ -1739,8 +1793,10 @@ The DBD::Mock::Session object is an alternate means of specifying the SQL statem
         },
         { 
             # with bound parameters
-            statement    => "SELECT foo FROM bar WHERE baz = ?",
-            bound_params => [ 10 ],
+            statement    => "SELECT foo FROM bar WHERE baz = ? AND borg = ?",
+            # check exact bound param value, 
+            # then check it against regexp
+            bound_params => [ 10, qr/\d+/ ],
             results      => [[ 'foo' ], [ 'baz' ]]
         }        
   ));
@@ -1842,11 +1898,11 @@ I would also like to add the ability to bind a subroutine (or possibly an object
 I use L<Devel::Cover> to test the code coverage of my tests, below is the L<Devel::Cover> report on this module test suite.
 
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- File                           stmt branch   cond    sub    pod   time  total
+ File                           stmt   bran   cond    sub    pod   time  total
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- DBD/Mock.pm                    93.2   88.4   77.2   94.8    0.0  100.0   90.7
+ DBD/Mock.pm                    90.9   85.5   76.0   94.1    0.0  100.0   88.4
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
- Total                          93.2   88.4   77.2   94.8    0.0  100.0   90.7
+ Total                          90.9   85.5   76.0   94.1    0.0  100.0   88.4
  ---------------------------- ------ ------ ------ ------ ------ ------ ------
 
 =head1 SEE ALSO
@@ -1880,6 +1936,8 @@ L<http://groups-beta.google.com/group/DBDMock>
 =item Thanks to Collin Winter for the patch to fix the C<begin_work()>, C<commit()> and C<rollback()> methods.
 
 =item Thanks to Andrew McHarg E<lt>amcharg@acm.orgE<gt> for C<fetchall_hashref()>, C<fetchrow_hashref()> and C<selectcol_arrayref()> methods and tests.
+
+=item Thanks to Andrew W. Gibbs for the C<mock_last_insert_ids> patch and test
 
 =back
 

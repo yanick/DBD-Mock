@@ -1,5 +1,28 @@
 Revision history for Perl extension DBD::Mock.
 
+1.32 Wed Dec 14, 2005
+    - Fixed RT Bug #15599
+    - Fixed RT Bug #15602
+    
+    - converted to Module::Build
+        - removed the VERSION file, and adjusted the numbers
+          in all places needed    
+
+    - added patch from Andrew W. Gibbs to allow the ARRAY 
+      version of 'mock_last_insert_id' attribute
+        - added test file as well
+        - added docs on it too
+        
+    - $sth->execute now returns the number of rows as per the 
+      DBI docs
+        - added some tests for this
+    
+    >> DBD::Mock::Session
+        - now allows regexp's in the bound_params list
+          so that you can check your params are 'like' 
+          something, and not exactly something
+        - Improved error messages
+
 0.28 Wen July 13, 2005
     - update to patch from Andrew McHarg <amcharg@acm.org>
       to fix behavior in selectcol_arrayref() methods and tests
