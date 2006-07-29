@@ -2,13 +2,14 @@
 use ExtUtils::MakeMaker;
 WriteMakefile
 (
+          'PL_FILES' => {},
+          'INSTALLDIRS' => 'site',
           'NAME' => 'DBD::Mock',
+          'EXE_FILES' => [],
           'VERSION_FROM' => 'lib/DBD/Mock.pm',
           'PREREQ_PM' => {
-                           'DBI' => '1.3',
-                           'Test::More' => '0.47'
-                         },
-          'INSTALLDIRS' => 'site',
-          'PL_FILES' => {}
+                           'Test::More' => '0.47',
+                           'DBI' => '1.3'
+                         }
         )
 ;

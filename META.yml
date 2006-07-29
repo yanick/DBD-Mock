@@ -1,9 +1,18 @@
 ---
 name: DBD-Mock
-version: 1.32
-author: ~
+version: !!perl/hash:Module::Build::Version
+  original: 1.34
+  version:
+    - 1
+    - 340
+author:
+  - 'Chris Winters E<lt>chris@cwinters.comE<gt>'
+  - 'Stevan Little E<lt>stevan@iinteractive.comE<gt>'
+  - 'Rob Kinyon E<lt>rob.kinyon@gmail.comE<gt>'
 abstract: Mock database driver for testing
 license: perl
+resources:
+  license: http://dev.perl.org/licenses/
 requires:
   DBI: 1.3
   perl: 5.6.0
@@ -12,29 +21,24 @@ build_requires:
 provides:
   DBD::Mock:
     file: lib/DBD/Mock.pm
-    version: 1.32
+    version: 1.34
   DBD::Mock::Pool:
     file: lib/DBD/Mock.pm
-    version: 1.32
   DBD::Mock::Pool::db:
     file: lib/DBD/Mock.pm
-    version: 1.32
   DBD::Mock::Session:
     file: lib/DBD/Mock.pm
-    version: 1.32
   DBD::Mock::StatementTrack:
     file: lib/DBD/Mock.pm
-    version: 1.32
   DBD::Mock::StatementTrack::Iterator:
     file: lib/DBD/Mock.pm
-    version: 1.32
   DBD::Mock::db:
     file: lib/DBD/Mock.pm
-    version: 1.32
   DBD::Mock::dr:
     file: lib/DBD/Mock.pm
-    version: 1.32
   DBD::Mock::st:
     file: lib/DBD/Mock.pm
-    version: 1.32
-generated_by: Module::Build version 0.2611
+generated_by: Module::Build version 0.2804
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.2.html
+  version: 1.2
