@@ -20,7 +20,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.36';
+our $VERSION = '1.37';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;        # will hold any error codes
@@ -395,9 +395,14 @@ sub selectcol_arrayref {
     # something went wrong, and so return undef.
     return undef unless defined $a_ref || ref($a_ref) ne 'ARRAY';
 
+    my @cols = 0;
+    if (ref $attrib->{Columns} eq 'ARRAY') {
+        @cols = map { $_ - 1 } @{$attrib->{Columns}};
+    }
+
     # if we do get something then we
     # grab all the columns out of it.
-    return [ map { $_->[0] } @{$a_ref} ]
+    return [ map { @$_[@cols] } @{$a_ref} ]
 }
 
 {
@@ -568,6 +573,14 @@ use warnings;
 
 $DBD::Mock::st::imp_data_size = 0;
 
+sub bind_col {
+    my ($sth, $param_num, $ref, $attr) = @_;
+
+    my $tracker = $sth->FETCH( 'mock_my_history' );
+    $tracker->bind_col( $param_num, $ref );
+    return 1;
+}
+
 sub bind_param {
     my ($sth, $param_num, $val, $attr) = @_;
     my $tracker = $sth->FETCH( 'mock_my_history' );
@@ -668,7 +681,16 @@ sub fetch {
     $dbh->{mock_can_fetch}++ if $dbh->{mock_can_fetch} < 0;
 
     my $tracker = $sth->FETCH( 'mock_my_history' );
-    return $tracker->next_record;
+
+    my $record = $tracker->next_record;
+
+    if ( my @cols = $tracker->bind_cols() ) {
+        for my $i ( grep { ref $cols[$_] } 0..$#cols ) {
+            ${ $cols[$i] } = $record->[$i];
+        }
+    }
+
+    return $record;
 }
 
 sub fetchrow_array {
@@ -983,6 +1005,11 @@ sub num_params {
     return scalar @{$self->{bound_params}};
 }
 
+sub bind_col {
+    my ($self, $param_num, $ref) = @_;
+    $self->{bind_cols}->[$param_num - 1] = $ref;
+}
+
 sub bound_param {
     my ($self, $param_num, $value) = @_;
     $self->{bound_params}->[$param_num - 1] = $value;
@@ -992,6 +1019,11 @@ sub bound_param {
 sub bound_param_trailing {
     my ($self, @values) = @_;
     push @{$self->{bound_params}}, @values;
+}
+
+sub bind_cols {
+    my $self = shift;
+    return @{$self->{bind_cols} || []};
 }
 
 sub bind_params {
@@ -1588,9 +1620,7 @@ This attribute can be used to set a current DBD::Mock::Session object. For more 
 
 This attribute is incremented each time an INSERT statement is passed to C<prepare> on a per-handle basis. It's starting value can be set with  the 'mock_start_insert_id' attribute (see below).
 
-This attribute also can be used with an ARRAY ref parameter, it's behavior is slightly different in that instead of incrementing the value for every C<prepare> it will only increment for each C<execute>. This allows it to be used over multiple C<execute> calls in a single C<$sth>. It's usage looks like this:
-
-  $dbh->{mock_last_insert_id} = [ 'Foo', 10 ];
+  $dbh->{mock_start_insert_id} = 10;
 
   my $sth = $dbh->prepare('INSERT INTO Foo (foo, bar) VALUES(?, ?)');
 
@@ -1605,6 +1635,25 @@ For more examples, please refer to the test file F<t/025_mock_last_insert_id.t>.
 =item B<mock_start_insert_id>
 
 This attribute can be used to set a start value for the 'mock_last_insert_id' attribute. It can also be used to effectively reset the 'mock_last_insert_id' attribute as well.
+
+This attribute also can be used with an ARRAY ref parameter, it's behavior is slightly different in that instead of incrementing the value for every C<prepare> it will only increment for each C<execute>. This allows it to be used over multiple C<execute> calls in a single C<$sth>. It's usage looks like this:
+
+  $dbh->{mock_start_insert_id} = [ 'Foo', 10 ];
+  $dbh->{mock_start_insert_id} = [ 'Baz', 20 ];
+
+  my $sth1 = $dbh->prepare('INSERT INTO Foo (foo, bar) VALUES(?, ?)');
+
+  my $sth2 = $dbh->prepare('INSERT INTO Baz (baz, buz) VALUES(?, ?)');
+
+  $sth1->execute(1, 2);
+  # $dbh->{mock_last_insert_id} == 10
+
+  $sth2->execute(3, 4);
+  # $dbh->{mock_last_insert_id} == 20
+
+Note that DBD::Mock's matching of table names in 'INSERT' statements is fairly simple, so if your table names are quoted in the insert statement (C<INSERT INTO "Foo">) then you need to quote the name for C<mock_start_insert_id>:
+
+  $dbh->{mock_start_insert_id} = [ q{"Foo"}, 10 ];
 
 =item B<mock_add_parser>
 

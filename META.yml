@@ -1,6 +1,6 @@
 ---
 name: DBD-Mock
-version: 1.36
+version: 1.37
 author:
   - 'Chris Winters E<lt>chris@cwinters.comE<gt>'
   - 'Stevan Little E<lt>stevan@iinteractive.comE<gt>'
@@ -17,7 +17,7 @@ build_requires:
 provides:
   DBD::Mock:
     file: lib/DBD/Mock.pm
-    version: 1.36
+    version: 1.37
   DBD::Mock::Pool:
     file: lib/DBD/Mock.pm
   DBD::Mock::Pool::db:

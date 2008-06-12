@@ -1,8 +1,9 @@
+.shipit
 Build.PL
 Changes
 lib/DBD/Mock.pm
 Makefile.PL
-MANIFEST
+MANIFEST			This list of files
 META.yml
 README
 t/000_basic.t
@@ -31,6 +32,7 @@ t/022_DBD_Mock_Session_bound_params.t
 t/023_statement_failure.t
 t/024_selcol_fetchhash.t
 t/025_mock_last_insert_id.t
+t/026_st_bind_col.t
 t/998_pod.t
 t/999_pod_coverage.t
 t/bug_0001.t
