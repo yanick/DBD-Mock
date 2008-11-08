@@ -1,6 +1,6 @@
 use strict;
 
-use Test::More tests => 20;
+use Test::More tests => 24;
 
 BEGIN {
     use_ok('DBD::Mock');  
@@ -14,25 +14,25 @@ BEGIN {
     isa_ok($dbh, 'DBI::db'); 
     
     is($dbh->{Name}, '', '... if no db-name is given');
-    cmp_ok( $dbh->{AutoCommit}, '==', 1,
+    ok( $dbh->{AutoCommit},
         '... AutoCommit DB attribute defaults to set' );    
     
     # DBI will handle attributes with 'private_', 'dbi_' or ,
     # 'dbd_' prefixes but all others, we need to handle.
     
     $dbh->{mysql_insertid} = 10;
-    cmp_ok($dbh->{mysql_insertid}, '==', 10, '... this attribute should be 10');
+    is($dbh->{mysql_insertid}, 10, '... this attribute should be 10');
     
     # DBI will handle these
     
     $dbh->{private_insert_id} = 15;
-    cmp_ok($dbh->{private_insert_id}, '==', 15, '... this attribute should be 15');    
+    is($dbh->{private_insert_id}, 15, '... this attribute should be 15');    
     
     $dbh->{dbi_attribute} = 2000;
-    cmp_ok($dbh->{dbi_attribute}, '==', 2000, '... this attribute should be 2000');  
+    is($dbh->{dbi_attribute}, 2000, '... this attribute should be 2000');  
     
     $dbh->{dbd_attr} = 15_000;
-    cmp_ok($dbh->{dbd_attr}, '==', 15_000, '... this attribute should be 15,000');  
+    is($dbh->{dbd_attr}, 15_000, '... this attribute should be 15,000');  
     
     $dbh->disconnect();     
 }   
@@ -46,11 +46,11 @@ BEGIN {
     $dbh->{PrintError} = 1;
     $dbh->{AutoCommit} = 1;
    
-    cmp_ok( $dbh->{RaiseError}, '==', 1,
+    ok( $dbh->{RaiseError},
         'RaiseError DB attribute set after connect()' );
-    cmp_ok( $dbh->{PrintError}, '==', 1,
+    ok( $dbh->{PrintError},
         'PrintError DB attribute set after connect()' );
-    cmp_ok( $dbh->{AutoCommit}, '==', 1,
+    ok( $dbh->{AutoCommit},
         'AutoCommit DB attribute set after connect()' );
             
     $dbh->disconnect();       
@@ -63,28 +63,28 @@ BEGIN {
                             { RaiseError => 1,
                               PrintError => 1,
                               AutoCommit => 1 } );
-    cmp_ok( $dbh->{RaiseError}, '==', 1,
+    ok( $dbh->{RaiseError},
         'RaiseError DB attribute set in connect()' );
-    cmp_ok( $dbh->{PrintError}, '==', 1,
+    ok( $dbh->{PrintError},
         'PrintError DB attribute set in connect()' );
-    cmp_ok( $dbh->{AutoCommit}, '==', 1,
+    ok( $dbh->{AutoCommit},
         'AutoCommit DB attribute set in connect()' );
 
     $dbh->disconnect();   
 }
 
-# test setting attributes with negative values during connect
+# test setting attributes with false values during connect
 
 {
     my $dbh = DBI->connect( 'DBI:Mock:', '', '',
                             { RaiseError => 0,
                               PrintError => 0,
                               AutoCommit => 0 } );
-    cmp_ok( $dbh->{RaiseError}, '==', 0,
+    ok( ! $dbh->{RaiseError},
         'RaiseError DB attribute unset in connect()' );
-    cmp_ok( $dbh->{PrintError}, '==', 0,
+    ok( ! $dbh->{PrintError},
         'PrintError DB attribute unset in connect()' );
-    cmp_ok( $dbh->{AutoCommit}, '==', 0,
+    ok( ! $dbh->{AutoCommit},
         'AutoCommit DB attribute unset in connect()' );
 
     $dbh->disconnect();   
@@ -105,4 +105,28 @@ BEGIN {
         [ 'DBI:Mock:', 'DBI:Mock:foo' ],
         '... got the right data sources');
 
+}
+
+{
+    my $dbh = DBI->connect( 'DBI:Mock:', '', '',
+                            { RaiseError => 0,
+                              PrintError => 0,
+                              PrintWarn  => 0,
+                              AutoCommit => 0,
+                            } );
+    $dbh->{RaiseError} = 1;
+    $dbh->{PrintError} = 1;
+    $dbh->{PrintWarn}  = 1;
+    $dbh->{AutoCommit} = 1;
+
+    ok( $dbh->{RaiseError},
+        'RaiseError DB attribute set in connect() and then changed' );
+    ok( $dbh->{PrintError},
+        'PrintError DB attribute set in connect() and then changed' );
+    ok( $dbh->{PrintWarn},
+        'PrintWarn DB attribute set in connect() and then changed' );
+    ok( $dbh->{AutoCommit},
+        'AutoCommit DB attribute set in connect() and then changed' );
+
+    $dbh->disconnect();   
 }

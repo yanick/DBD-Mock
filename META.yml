@@ -1,6 +1,6 @@
 ---
 name: DBD-Mock
-version: 1.37
+version: 1.38
 author:
   - 'Chris Winters E<lt>chris@cwinters.comE<gt>'
   - 'Stevan Little E<lt>stevan@iinteractive.comE<gt>'
@@ -17,7 +17,7 @@ build_requires:
 provides:
   DBD::Mock:
     file: lib/DBD/Mock.pm
-    version: 1.37
+    version: 1.38
   DBD::Mock::Pool:
     file: lib/DBD/Mock.pm
   DBD::Mock::Pool::db:
@@ -34,7 +34,7 @@ provides:
     file: lib/DBD/Mock.pm
   DBD::Mock::st:
     file: lib/DBD/Mock.pm
-generated_by: Module::Build version 0.2808
+generated_by: Module::Build version 0.3
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.2.html
   version: 1.2
