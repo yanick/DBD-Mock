@@ -20,7 +20,7 @@ use warnings;
 
 require DBI;
 
-our $VERSION = '1.38';
+our $VERSION = '1.39';
 
 our $drh    = undef;    # will hold driver handle
 our $err    = 0;        # will hold any error codes
@@ -91,7 +91,8 @@ use constant NULL_RESULTSET => [[]];
 ########################################
 # DRIVER
 
-package DBD::Mock::dr;
+package
+    DBD::Mock::dr;
 
 use strict;
 use warnings;
@@ -189,7 +190,8 @@ sub DESTROY { undef }
 ########################################
 # DATABASE
 
-package DBD::Mock::db;
+package
+    DBD::Mock::db;
 
 use strict;
 use warnings;
@@ -285,7 +287,7 @@ sub prepare {
         $sth->STORE(NUM_OF_FIELDS  => scalar @{$fields});
     }
     else {
-        $sth->trace_msg('No return data set in DBH', 1);
+        $sth->trace_msg("No return data set in DBH\n", 1);
     }
 
      # do not allow a statement handle to be created if there is no
@@ -554,7 +556,8 @@ sub disconnect {
 ########################################
 # STATEMENT
 
-package DBD::Mock::st;
+package
+    DBD::Mock::st;
 
 use strict;
 use warnings;
@@ -670,7 +673,8 @@ sub fetch {
 
     my $tracker = $sth->FETCH( 'mock_my_history' );
 
-    my $record = $tracker->next_record;
+    my $record = $tracker->next_record
+        or return;
 
     if ( my @cols = $tracker->bind_cols() ) {
         for my $i ( grep { ref $cols[$_] } 0..$#cols ) {
@@ -912,7 +916,8 @@ sub DESTROY { undef }
 # Database Pooling
 # (Apache::DBI emulation)
 
-package DBD::Mock::Pool;
+package
+    DBD::Mock::Pool;
 
 use strict;
 use warnings;
@@ -930,7 +935,8 @@ sub connect {
     return $connection = bless $drh->connect(@_), 'DBD::Mock::Pool::db';
 }
 
-package DBD::Mock::Pool::db;
+package
+    DBD::Mock::Pool::db;
 
 use strict;
 use warnings;
@@ -942,7 +948,8 @@ sub disconnect { 1 }
 ########################################
 # TRACKER
 
-package DBD::Mock::StatementTrack;
+package
+    DBD::Mock::StatementTrack;
 
 use strict;
 use warnings;
@@ -1125,7 +1132,8 @@ sub bound_params {
     return $self->{bound_params};
 }
 
-package DBD::Mock::StatementTrack::Iterator;
+package
+    DBD::Mock::StatementTrack::Iterator;
 
 use strict;
 use warnings;
@@ -1146,7 +1154,8 @@ sub next {
 
 sub reset { (shift)->{pointer} = 0 }
 
-package DBD::Mock::Session;
+package
+    DBD::Mock::Session;
 
 use strict;
 use warnings;
