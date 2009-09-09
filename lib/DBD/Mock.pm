@@ -960,7 +960,15 @@ sub new {
     # but can be overridden
     $params{return_data}  ||= [];
     $params{fields}       ||= [];
-    $params{bound_params} ||= [];
+    $params{bound_params} ||= {};
+
+    if ( ref $params{bound_params} eq 'ARRAY' ) {
+        my @params = @{ $params{bound_params} };
+        my $index = 1;
+        $params{bound_params} = {};
+        $params{bound_params}{$index++} = $_ for @params;
+    }
+
     $params{statement}    ||= "";
     $params{failure}      ||= undef;
     # these params should never be overridden
@@ -1000,7 +1008,9 @@ sub num_rows {
 
 sub num_params {
     my ($self) = @_;
-    return scalar @{$self->{bound_params}};
+
+    my @p = keys %{ $self->bound_params_as_hashref };
+    return scalar @p;
 }
 
 sub bind_col {
@@ -1010,13 +1020,17 @@ sub bind_col {
 
 sub bound_param {
     my ($self, $param_num, $value) = @_;
-    $self->{bound_params}->[$param_num - 1] = $value;
+    $self->{bound_params}{$param_num} = $value;
     return $self->bound_params;
 }
 
 sub bound_param_trailing {
     my ($self, @values) = @_;
-    push @{$self->{bound_params}}, @values;
+    my $index = $self->num_params;
+
+    for ( @values ) {
+        $self->bound_param( ++$index => $_ );
+    }
 }
 
 sub bind_cols {
@@ -1026,7 +1040,18 @@ sub bind_cols {
 
 sub bind_params {
     my ($self, @values) = @_;
-    @{$self->{bound_params}} = @values;
+
+    if ( ref $values[0] eq 'HASH' ) {
+        my %p = %{ $values[0] };
+        $self->bound_param( $_ => $p{$_} ) for keys %p;
+    }
+    else {
+        for ( 0..$#values ) {
+            $self->bound_param( $_ + 1 => $values[$_] );
+        }
+    }
+
+    return $self->bound_params;
 }
 
 # Rely on the DBI's notion of Active: a statement is active if it's
@@ -1082,7 +1107,7 @@ sub to_string {
     my ($self) = @_;
     return join "\n" => (
                   $self->{statement},
-                  "Values: [" . join( '] [', @{ $self->{bound_params} } ) . "]",
+                  "Values: [" . join( '] [', %{ $self->{bound_params} } ) . "]",
                   "Records: on $self->{current_record_num} of " . scalar(@{$self->return_data}) . "\n",
                   "Executed? $self->{is_executed}; Finished? $self->{is_finished}"
                   );
@@ -1128,8 +1153,36 @@ sub fields {
 
 sub bound_params {
     my ($self, @values) = @_;
-    push @{$self->{bound_params}}, @values if scalar @values;
-    return $self->{bound_params};
+
+    my %params = %{ $self->bound_params_as_hashref( @values ) };
+
+    return \%params if grep { !/^\d+$/ or $_ == 0 } keys %params;
+
+    my @params;
+    while ( my ( $i, $v ) = each %params ) {
+        $params[ $i-1 ] = $v;
+    }
+
+    return \@params;
+}
+
+sub bound_params_as_hashref {
+    my $self = shift;
+    my @values = @_;
+
+    if ( ref $values[0] eq 'HASH' ) {
+        my %params = %{ $values[0] };
+        $self->bound_param( $_ => $params{$_} ) for keys %params;
+    }
+    else {
+        for my $i ( 0..$#values ) {
+            $self->bound_param( $i+1 => $values[$i] );
+        }
+    }
+
+    my %p = %{ $self->{bound_params} };
+
+    return \%p;
 }
 
 package
@@ -1826,7 +1879,7 @@ B<fields>: Arrayref of field names
 
 =item *
 
-B<bound_params>: Arrayref of bound parameters
+B<bound_params>: Arrayref or hashref of bound parameters
 
 =back
 
@@ -1840,7 +1893,41 @@ Gets/sets the fields to use for this statement.
 
 =item B<bound_params>  (Statement attribute 'mock_params')
 
-Gets/set the bound parameters to use for this statement.
+Gets/sets the bound parameters to use for this statement.
+
+If the parameters are bound in the classic positional
+way, the method will return them as an array ref.
+
+    my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? and is_active = ?' );
+    $sth->bind_param( 1 => '613' );
+    $sth->bind_param( 2 => 'yes' );
+
+    # later with the statement track object
+
+    my @params = @{ $st->bound_params };  # @params is ( 613, 'yes' )
+
+If they are bound as named parameters, the method will return then as 
+a hash ref instead.
+
+    my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = :id and is_active = :active' );
+    $sth->bind_param( ':id'        => '613' );
+    $sth->bind_param( ':is_active' => 'yes' );
+
+    # later with the statement track object
+
+    my %params = %{ $st->bound_params };  # %params is ( :id => 613, :active => 'yes' )
+
+=item B<bound_params_as_hashref>  (Statement attribute 'mock_params')
+
+Like B<bound_params>, but always returns a hash ref.  
+
+    my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? and is_active = ?' );
+    $sth->bind_param( 1 => '613' );
+    $sth->bind_param( 2 => 'yes' );
+
+    # later with the statement track object
+
+    my %params = %{ $st->bound_params_as_hashref };  # %params is ( 1 => 613, 2 => 'yes' )
 
 =item B<return_data>  (Statement attribute 'mock_records')
 

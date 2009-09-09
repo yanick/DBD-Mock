@@ -1,10 +1,12 @@
 use strict;
 
-use Test::More tests => 68;
+use Test::More tests => 71;
 
 BEGIN {
     use_ok('DBD::Mock');
 }
+
+use DBI;
 
 { # check the available methods
 
@@ -100,7 +102,7 @@ BEGIN {
             $st_track->bound_params(), 
             [ 'baz', 'foo', 'bar', 'foobar' ], 
             '... we have the expected bound params');    
-            
+    
     is($st_track->num_params(), 4, '... we have the expected num of bound params');    
     
     {
@@ -146,3 +148,35 @@ BEGIN {
     is($st_track->is_finished(), 'no', '... our statement is no longer finished');                                
 
 }    
+
+{
+    # bound_params
+    my $dbh = DBI->connect( 'DBI:Mock:', '', '' );
+
+    my $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? and is_active = ?' );
+    $sth->bind_param( 1 => '613' );
+    $sth->bind_param( 2 => 'yes' );
+    $sth->execute;
+
+    is_deeply $dbh->{mock_all_history_iterator}->next->bound_params 
+        => [ 613, 'yes' ], 'positional bound_params()';
+
+    $dbh->{mock_clear_history} = 1;
+    $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = :id and is_active = :active' );
+    $sth->bind_param( ':id'        => '101' );
+    $sth->bind_param( ':active' => 'no' );
+    $sth->execute;
+
+    is_deeply $dbh->{mock_all_history_iterator}->next->bound_params 
+        => { ':id' => 101, ':active' => 'no' }, 'named bound_params()';
+
+    $dbh->{mock_clear_history} = 1;
+    $sth = $dbh->prepare( 'SELECT * FROM foo WHERE id = ? and is_active = ?' );
+    $sth->bind_param( 1 => '123' );
+    $sth->bind_param( 2 => 'maybe' );
+    $sth->execute;
+
+    is_deeply $dbh->{mock_all_history_iterator}->next->bound_params_as_hashref
+        => { 1 => 123, 2 => 'maybe' }, 'positional bound_params() as hashref';
+
+}
